@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: otpchat-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSL
+        value: true
+      - key: TYPEORM_SYNCHRONIZE
+        value: true
+      - key: REGISTER_COOLDOWN_ENABLED
+        value: false
+      - key: DEVICE_ACCOUNT_LIMIT_ENABLED
+        value: false

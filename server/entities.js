@@ -1,0 +1,124 @@
+import { EntitySchema } from 'typeorm';
+
+const textDate = { type: 'text', nullable: true };
+
+export const UserEntity = new EntitySchema({
+  name: 'User',
+  tableName: 'users',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    username: { type: 'varchar', unique: true },
+    passwordHash: { type: 'text' },
+    deviceFingerprint: { type: 'varchar' },
+    mustChangePassword: { type: 'boolean', default: false },
+    createdAt: { type: 'text' },
+    lastSeenAt: textDate
+  }
+});
+
+export const SessionEntity = new EntitySchema({
+  name: 'Session',
+  tableName: 'sessions',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    userId: { type: 'varchar' },
+    tokenHash: { type: 'varchar', unique: true },
+    deviceFingerprint: { type: 'varchar' },
+    createdAt: { type: 'text' },
+    lastUsedAt: { type: 'text' },
+    expiresAt: { type: 'text' }
+  }
+});
+
+export const ContactEntity = new EntitySchema({
+  name: 'Contact',
+  tableName: 'contacts',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    userIds: { type: 'simple-array' },
+    conversationId: { type: 'varchar', unique: true },
+    timerSeconds: { type: 'integer', default: 0 },
+    createdAt: { type: 'text' }
+  }
+});
+
+export const InvitationEntity = new EntitySchema({
+  name: 'Invitation',
+  tableName: 'invitations',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    type: { type: 'varchar' },
+    code: { type: 'varchar', unique: true },
+    inviterId: { type: 'varchar' },
+    groupId: { type: 'varchar', nullable: true },
+    status: { type: 'varchar' },
+    createdAt: { type: 'text' },
+    expiresAt: { type: 'text' },
+    qr: { type: 'text', nullable: true },
+    link: { type: 'text' }
+  }
+});
+
+export const GroupEntity = new EntitySchema({
+  name: 'Group',
+  tableName: 'chat_groups',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    name: { type: 'varchar' },
+    secret: { type: 'text', unique: true },
+    founderId: { type: 'varchar' },
+    timerSeconds: { type: 'integer', default: 0 },
+    createdAt: { type: 'text' }
+  }
+});
+
+export const GroupMemberEntity = new EntitySchema({
+  name: 'GroupMember',
+  tableName: 'group_members',
+  columns: {
+    id: { type: 'integer', primary: true, generated: true },
+    groupId: { type: 'varchar' },
+    userId: { type: 'varchar' },
+    role: { type: 'varchar' },
+    joinedAt: { type: 'text' }
+  },
+  indices: [{ name: 'idx_group_members_unique_user', columns: ['groupId', 'userId'], unique: true }]
+});
+
+export const MessageEntity = new EntitySchema({
+  name: 'Message',
+  tableName: 'messages',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    scope: { type: 'varchar' },
+    targetId: { type: 'varchar' },
+    senderId: { type: 'varchar' },
+    encrypted: { type: 'jsonb' },
+    createdAt: { type: 'text' },
+    expiresAt: textDate
+  },
+  indices: [{ name: 'idx_messages_scope_target', columns: ['scope', 'targetId'] }]
+});
+
+export const SecurityEventEntity = new EntitySchema({
+  name: 'SecurityEvent',
+  tableName: 'security_events',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    type: { type: 'varchar' },
+    ip: { type: 'varchar', nullable: true },
+    fingerprint: { type: 'varchar', nullable: true },
+    createdAt: { type: 'text' }
+  }
+});
+
+export const entities = [
+  UserEntity,
+  SessionEntity,
+  ContactEntity,
+  InvitationEntity,
+  GroupEntity,
+  GroupMemberEntity,
+  MessageEntity,
+  SecurityEventEntity
+];

@@ -1,0 +1,220 @@
+@if (!auth.ready()) {
+  <main class="center"><div class="loader">Cargando OTPChat...</div></main>
+} @else if (!auth.user()) {
+  <main class="center">
+    <form class="auth" (ngSubmit)="login()">
+      <div class="brand">
+        <span class="lock" aria-hidden="true">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </span>
+        <div>
+          <h1>OTPChat</h1>
+          <p>Chat cifrado con OTP rotativo, contactos por QR y grupos privados.</p>
+        </div>
+      </div>
+
+      <div class="mode-tabs" role="tablist">
+        <button type="button" [class.active]="authMode === 'login'" (click)="switchAuthMode('login')">Entrar</button>
+        <button type="button" [class.active]="authMode === 'register'" (click)="switchAuthMode('register')">Registro</button>
+      </div>
+
+      <input name="username" [(ngModel)]="username" placeholder="Usuario" autocomplete="username" required>
+      <label class="password-field">
+        <input name="password" [(ngModel)]="password" placeholder="Contraseña" [type]="showPassword ? 'text' : 'password'" autocomplete="current-password" required>
+        <button type="button" title="Ver contraseña" (click)="showPassword = !showPassword">
+          @if (showPassword) {
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 10.6A2 2 0 0 0 12 14a2 2 0 0 0 1.4-.6"/><path d="M8.4 5.4A10.8 10.8 0 0 1 12 5c5 0 8 4 9 7a13.4 13.4 0 0 1-2.2 3.6"/><path d="M6.2 6.2A13.6 13.6 0 0 0 3 12c1 3 4 7 9 7a10.7 10.7 0 0 0 4.2-.8"/></svg>
+          } @else {
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 12s3-7 9-7 9 7 9 7-3 7-9 7-9-7-9-7Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+          }
+        </button>
+      </label>
+
+      @if (authMode === 'register') {
+        <label class="password-field">
+          <input name="repeatPassword" [(ngModel)]="repeatPassword" placeholder="Repetir contraseña" [type]="showRepeatPassword ? 'text' : 'password'" autocomplete="new-password" required>
+          <button type="button" title="Ver contraseña" (click)="showRepeatPassword = !showRepeatPassword">
+            @if (showRepeatPassword) {
+              <svg class="icon" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 10.6A2 2 0 0 0 12 14a2 2 0 0 0 1.4-.6"/><path d="M8.4 5.4A10.8 10.8 0 0 1 12 5c5 0 8 4 9 7a13.4 13.4 0 0 1-2.2 3.6"/><path d="M6.2 6.2A13.6 13.6 0 0 0 3 12c1 3 4 7 9 7a10.7 10.7 0 0 0 4.2-.8"/></svg>
+            } @else {
+              <svg class="icon" viewBox="0 0 24 24"><path d="M3 12s3-7 9-7 9 7 9 7-3 7-9 7-9-7-9-7Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+            }
+          </button>
+        </label>
+        <ul class="rules">
+          <li [class.ok]="!passwordErrors(password).includes('mas de 6 caracteres')">Mas de 6 caracteres</li>
+          <li [class.ok]="!passwordErrors(password).includes('1 mayuscula')">1 mayuscula</li>
+          <li [class.ok]="!passwordErrors(password).includes('1 minuscula')">1 minuscula</li>
+          <li [class.ok]="!passwordErrors(password).includes('1 numero')">1 numero</li>
+          <li [class.ok]="!passwordErrors(password).includes('1 simbolo')">1 simbolo</li>
+          <li [class.ok]="password && password === repeatPassword">Coinciden</li>
+        </ul>
+      }
+
+      @if (authError()) { <div class="error">{{ authError() }}</div> }
+      <button class="primary">{{ authMode === 'login' ? 'Entrar' : 'Crear cuenta' }}</button>
+      <button type="button" class="theme-inline" (click)="toggleTheme()">
+        @if (darkMode()) {
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          Modo claro
+        } @else {
+          <svg class="icon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a7 7 0 1 0 10.5 10.5Z"/></svg>
+          Modo oscuro
+        }
+      </button>
+    </form>
+  </main>
+} @else if (auth.user()?.mustChangePassword) {
+  <main class="center">
+    <form class="auth" (ngSubmit)="changePassword()">
+      <h1>Cambia tu contraseña</h1>
+      <p>Tu clave fue reseteada por el admin. Tienes que definir una nueva antes de chatear.</p>
+      <label class="password-field">
+        <input name="newPassword" [(ngModel)]="newPassword" [type]="showNewPassword ? 'text' : 'password'" placeholder="Nueva contraseña" required>
+        <button type="button" title="Ver contraseña" (click)="showNewPassword = !showNewPassword">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M3 12s3-7 9-7 9 7 9 7-3 7-9 7-9-7-9-7Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+        </button>
+      </label>
+      <button class="primary">Guardar</button>
+    </form>
+  </main>
+} @else {
+  <main class="app" [class.show-chat]="panel === 'chat'">
+    <aside class="sidebar">
+      <header>
+        <div>
+          <strong>{{ auth.user()?.username }}</strong>
+          <span>{{ auth.user()?.deviceFingerprint?.slice(0, 12) }}...</span>
+        </div>
+        <div class="row">
+          <button title="Agregar contacto" (click)="createInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button title="Grupos" (click)="openGroupSheet()"><svg class="icon" viewBox="0 0 24 24"><path d="M16 11a4 4 0 1 0-8 0"/><path d="M3 21a7 7 0 0 1 14 0"/><path d="M17 8a3 3 0 1 1 1.5 5.6"/><path d="M18 17a5.5 5.5 0 0 1 3 4"/></svg></button>
+          <button title="Tema" (click)="toggleTheme()">
+            @if (darkMode()) {
+              <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            } @else {
+              <svg class="icon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a7 7 0 1 0 10.5 10.5Z"/></svg>
+            }
+          </button>
+          @if (auth.user()?.isSuperadmin) { <button title="Admin" (click)="openAdmin()"><svg class="icon" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button> }
+          <button title="Salir" (click)="auth.logout()"><svg class="icon" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 3v18h-8"/></svg></button>
+        </div>
+      </header>
+
+      <section class="list">
+        <h2>Contactos</h2>
+        @for (c of contacts(); track c.id) {
+          <button class="item" (click)="openContact(c)">
+            <span>{{ c.other.username }}</span>
+            @if (badge()[c.conversationId]) { <b>{{ badge()[c.conversationId] }}</b> }
+          </button>
+        } @empty {
+          <p class="empty">Crea una invitacion con + para empezar.</p>
+        }
+        <h2>Grupos</h2>
+        @for (g of groups(); track g.id) {
+          <button class="item" (click)="openGroup(g)">
+            <span>{{ g.name }}</span><small>{{ g.role }}</small>
+            @if (badge()[g.id]) { <b>{{ badge()[g.id] }}</b> }
+          </button>
+        }
+      </section>
+    </aside>
+
+    <section class="chat">
+      @if (selected(); as chat) {
+        <header class="chat-head">
+          <button class="back" (click)="back()"><svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <div class="title">
+            <strong>{{ chat.title }}</strong>
+            @if (chat.timerSeconds) { <span class="banner">Mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
+          </div>
+          <div class="otp" [class.warn]="crypto.secondsLeft() < 10" [class.danger]="crypto.secondsLeft() < 5">
+            <span>{{ crypto.otp() }}</span>
+            <div><i [style.width.%]="crypto.secondsLeft() / 30 * 100"></i></div>
+            <small>{{ crypto.secondsLeft() }}s</small>
+          </div>
+          <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Mensajes temporales">
+            @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
+          </select>
+          @if (chat.scope === 'group') { <button title="QR del grupo" (click)="groupInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-6v-2h4zM14 18h2v2h-2z"/></svg></button> }
+        </header>
+
+        <div class="messages" #scrollbox>
+          @for (m of messages(); track m.id; let i = $index) {
+            @if (i === 0 || (messages()[i - 1].createdAt | date:'mediumDate') !== (m.createdAt | date:'mediumDate')) {
+              <div class="date">{{ m.createdAt | date:'fullDate' }}</div>
+            }
+            <article class="bubble" [class.mine]="isMine(m)">
+              @if (chat.scope === 'group' && !isMine(m)) { <strong>{{ m.sender?.username }}</strong> }
+              <p>{{ m.text }}</p>
+              <footer>
+                <time>{{ m.createdAt | date:'shortTime' }}</time>
+                @if (m.expiresAt) { <span class="ttl" [class.hot]="countdown(m.expiresAt).endsWith('s')">{{ countdown(m.expiresAt) }}</span> }
+              </footer>
+            </article>
+          }
+        </div>
+
+        <footer class="composer">
+          <textarea [(ngModel)]="draft" (keydown)="keydown($event)" rows="1" placeholder="Mensaje"></textarea>
+          <button class="send" (click)="send()"><svg class="icon" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7Z"/></svg></button>
+        </footer>
+      } @else {
+        <div class="blank">Elige un chat o crea una invitacion.</div>
+      }
+    </section>
+  </main>
+}
+
+@if (sheet(); as openSheet) {
+  <div class="shade" (click)="sheet.set(null)"></div>
+  <section class="sheet" [class.qr-sheet]="invite()">
+    <button class="close" title="Cerrar" (click)="sheet.set(null)"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    @if (openSheet === 'contact' && invite()) {
+      <h2>Invitacion de contacto</h2>
+      <img [src]="invite().qr" alt="QR de invitacion">
+      <input [value]="invite().link" readonly>
+      <p>Esperando que alguien acepte... vence en {{ countdown(invite().expiresAt) }}</p>
+      <button (click)="api.cancelInvite(invite().code); sheet.set(null)">Cancelar invitacion</button>
+    }
+    @if (openSheet === 'group') {
+      @if (invite()) {
+        <h2>QR del grupo</h2>
+        <img [src]="invite().qr" alt="QR de grupo">
+        <input [value]="invite().link" readonly>
+      } @else {
+        <h2>Crear grupo</h2>
+        <input [(ngModel)]="groupName" placeholder="Nombre del grupo">
+        <button class="primary" (click)="createGroup()">Crear</button>
+        <h2>Unirse con secreto OTP</h2>
+        <input [(ngModel)]="groupSecret" placeholder="Secreto del grupo">
+        <button (click)="joinGroup()">Unirme</button>
+      }
+    }
+    @if (openSheet === 'admin') {
+      <h2>Superadmin</h2>
+      @if (adminStats()) {
+        <div class="stats">
+          <b>{{ adminStats().users }}<span>usuarios</span></b>
+          <b>{{ adminStats().messages }}<span>mensajes</span></b>
+          <b>{{ adminStats().groups }}<span>grupos</span></b>
+          <b>{{ adminStats().activeToday }}<span>activos hoy</span></b>
+        </div>
+      }
+      @if (selectedUsers().size) {
+        <div class="toolbar">{{ selectedUsers().size }} seleccionados <button (click)="deleteSelected()">Borrar</button></div>
+      }
+      @if (tempPassword()) { <div class="temp">Clave temporal: <strong>{{ tempPassword() }}</strong></div> }
+      <div class="table">
+        @for (u of adminUsers(); track u.id) {
+          <label>
+            <input type="checkbox" [checked]="selectedUsers().has(u.id)" [disabled]="u.isSuperadmin" (change)="toggleUser(u.id)">
+            <span>{{ u.username }}</span><small>{{ u.createdAt | date:'short' }}</small><small>{{ u.messages }} msg · {{ u.groups }} grupos</small>
+            <button [disabled]="u.isSuperadmin" (click)="resetPassword(u.id)">Reset</button>
+          </label>
+        }
+      </div>
+    }
+  </section>
+}
