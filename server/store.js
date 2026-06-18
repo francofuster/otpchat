@@ -75,6 +75,21 @@ function repo(key) {
   return AppDataSource.getRepository(collections[key]);
 }
 
+function uniqueKeyFor(key, item) {
+  if (key === 'groupMembers') return `${item.groupId}:${item.userId}`;
+  return item.id;
+}
+
+function normalizeCollection(key) {
+  const seen = new Map();
+  for (const item of db[key]) {
+    const uniqueKey = uniqueKeyFor(key, item);
+    if (!uniqueKey) continue;
+    seen.set(uniqueKey, item);
+  }
+  db[key] = [...seen.values()];
+}
+
 export async function loadStore() {
   await ensureDatabaseExists();
   if (!AppDataSource.isInitialized) await AppDataSource.initialize();
@@ -82,9 +97,15 @@ export async function loadStore() {
 }
 
 async function saveCollection(key) {
+  normalizeCollection(key);
   const repository = repo(key);
-  await repository.clear();
-  if (db[key].length) await repository.save(db[key]);
+  const primaryColumn = key === 'groupMembers' ? 'id' : 'id';
+  const rows = db[key];
+  const existing = await repository.find();
+  const rowIds = new Set(rows.map((item) => item[primaryColumn]).filter(Boolean));
+  const stale = existing.filter((item) => item[primaryColumn] && !rowIds.has(item[primaryColumn]));
+  if (stale.length) await repository.remove(stale);
+  if (rows.length) await repository.save(rows);
 }
 
 export async function saveStore() {

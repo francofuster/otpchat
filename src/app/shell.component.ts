@@ -283,7 +283,17 @@ export class ShellComponent implements OnInit {
       this.api.toast('Tu sesión fue invalidada por reset de contraseña');
       this.auth.clear();
     }
-    if (event.type === 'contact:accepted' || event.type?.startsWith('group:')) await this.load();
+    if (event.type === 'contact:accepted') {
+      await this.load();
+      const contact = this.contacts().find((item) => item.conversationId === event.conversationId);
+      if (contact) {
+        this.sheet.set(null);
+        this.invite.set(null);
+        await this.openContact(contact);
+        this.api.toast('Invitación aceptada');
+      }
+    }
+    if (event.type?.startsWith('group:')) await this.load();
     if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
     if (event.type === 'message:new') {
       const chat = this.selected();

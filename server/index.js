@@ -32,6 +32,10 @@ const online = new Map();
 const registerCooldownEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.REGISTER_COOLDOWN_ENABLED || '').toLowerCase());
 const deviceAccountLimitEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.DEVICE_ACCOUNT_LIMIT_ENABLED || '').toLowerCase());
 
+function inviteLink(code) {
+  return `${clientOrigin.replace(/\/$/, '')}/#/invite/${code}`;
+}
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
@@ -222,7 +226,7 @@ app.get('/api/bootstrap', auth, (req, res) => {
 
 app.post('/api/invitations/contact', auth, async (req, res) => {
   const code = nanoid(24);
-  const link = `${clientOrigin}/invite/${code}`;
+  const link = inviteLink(code);
   const qr = await QRCode.toDataURL(link, { margin: 1, width: 320 });
   const invitation = {
     id: makeId('inv'),
@@ -314,7 +318,7 @@ app.post('/api/groups/:id/invite', auth, async (req, res) => {
   if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
   if (member.role !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
   const code = nanoid(24);
-  const link = `${clientOrigin}/invite/${code}`;
+  const link = inviteLink(code);
   const qr = await QRCode.toDataURL(link, { margin: 1, width: 320 });
   const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), qr, link };
   await mutate((db) => db.invitations.push(invitation));
