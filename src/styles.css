@@ -12,6 +12,9 @@
   --warning: #ffb703;
   --ok: #1b998b;
   --shadow: #1232;
+  --whatsapp: #128c7e;
+  --bubble-out: #d9fdd3;
+  --bubble-in: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -27,11 +30,14 @@
   --warning: #ffd166;
   --ok: #3dd6c6;
   --shadow: #0008;
+  --whatsapp: #00a884;
+  --bubble-out: #005c4b;
+  --bubble-in: #202c33;
 }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--ink); }
+body { background: var(--bg); color: var(--ink); overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 button { border: 0; cursor: pointer; }
 .icon { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

@@ -82,9 +82,12 @@
   <main class="app" [class.show-chat]="panel === 'chat'">
     <aside class="sidebar">
       <header>
-        <div>
+        <div class="account">
+          <span class="avatar self">{{ auth.user()?.username?.slice(0, 1) }}</span>
+          <div>
           <strong>{{ auth.user()?.username }}</strong>
           <span>{{ auth.user()?.deviceFingerprint?.slice(0, 12) }}...</span>
+          </div>
         </div>
         <div class="row">
           <button title="Agregar contacto" (click)="createInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
@@ -105,7 +108,8 @@
         <h2>Contactos</h2>
         @for (c of contacts(); track c.id) {
           <button class="item" (click)="openContact(c)">
-            <span>{{ c.other.username }}</span>
+            <span class="avatar">{{ c.other.username.slice(0, 1) }}</span>
+            <span class="item-main"><strong>{{ c.other.username }}</strong><small>Chat privado cifrado</small></span>
             @if (badge()[c.conversationId]) { <b>{{ badge()[c.conversationId] }}</b> }
           </button>
         } @empty {
@@ -114,7 +118,8 @@
         <h2>Grupos</h2>
         @for (g of groups(); track g.id) {
           <button class="item" (click)="openGroup(g)">
-            <span>{{ g.name }}</span><small>{{ g.role }}</small>
+            <span class="avatar group-avatar"><svg class="icon" viewBox="0 0 24 24"><path d="M16 11a4 4 0 1 0-8 0"/><path d="M3 21a7 7 0 0 1 14 0"/><path d="M17 8a3 3 0 1 1 1.5 5.6"/><path d="M18 17a5.5 5.5 0 0 1 3 4"/></svg></span>
+            <span class="item-main"><strong>{{ g.name }}</strong><small>{{ g.role }}</small></span>
             @if (badge()[g.id]) { <b>{{ badge()[g.id] }}</b> }
           </button>
         }
@@ -125,19 +130,22 @@
       @if (selected(); as chat) {
         <header class="chat-head">
           <button class="back" (click)="back()"><svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <span class="avatar chat-avatar">{{ chat.title.slice(0, 1) }}</span>
           <div class="title">
             <strong>{{ chat.title }}</strong>
             @if (chat.timerSeconds) { <span class="banner">Tus mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
           </div>
-          <div class="otp" [class.warn]="crypto.secondsLeft() < 10" [class.danger]="crypto.secondsLeft() < 5">
-            <span>{{ crypto.otp() }}</span>
-            <div><i [style.width.%]="crypto.secondsLeft() / 30 * 100"></i></div>
-            <small>{{ crypto.secondsLeft() }}s</small>
+          <div class="chat-tools">
+            <div class="otp" [class.warn]="crypto.secondsLeft() < 10" [class.danger]="crypto.secondsLeft() < 5">
+              <span>{{ crypto.otp() }}</span>
+              <div><i [style.width.%]="crypto.secondsLeft() / 30 * 100"></i></div>
+              <small>{{ crypto.secondsLeft() }}s</small>
+            </div>
+            <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes">
+              @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
+            </select>
+            @if (chat.scope === 'group' && chat.role === 'admin') { <button title="QR del grupo" (click)="groupInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-6v-2h4zM14 18h2v2h-2z"/></svg></button> }
           </div>
-          <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes">
-            @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
-          </select>
-          @if (chat.scope === 'group' && chat.role === 'admin') { <button title="QR del grupo" (click)="groupInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-6v-2h4zM14 18h2v2h-2z"/></svg></button> }
         </header>
 
         <div class="messages" #scrollbox>
