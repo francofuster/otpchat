@@ -44,16 +44,17 @@ export class CryptoService {
     if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const key = await this.deriveKey(secret, salt);
+    const keyStep = this.currentStep();
+    const key = await this.deriveKey(await this.sharedSecret(secret, keyStep), salt);
     const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text));
-    return { iv: this.b64(iv), salt: this.b64(salt), ciphertext: this.b64(new Uint8Array(ciphertext)) };
+    return { iv: this.b64(iv), salt: this.b64(salt), ciphertext: this.b64(new Uint8Array(ciphertext)), keyStep };
   }
 
   async decrypt(payload: EncryptedPayload, secret: string): Promise<string> {
     try {
       const iv = this.fromB64(payload.iv);
       const salt = this.fromB64(payload.salt);
-      const key = await this.deriveKey(secret, salt);
+      const key = await this.deriveKey(await this.sharedSecret(secret, payload.keyStep), salt);
       const subtle = subtleCrypto();
       if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
       const clear = await subtle.decrypt({ name: 'AES-GCM', iv }, key, this.fromB64(payload.ciphertext));
@@ -63,8 +64,8 @@ export class CryptoService {
     }
   }
 
-  async sharedSecret(baseSecret: string): Promise<string> {
-    return `${this.otp()}:${baseSecret}`;
+  async sharedSecret(baseSecret: string, keyStep = this.currentStep()): Promise<string> {
+    return `${await this.totpForStep(keyStep)}:${baseSecret}`;
   }
 
   private async deriveKey(secret: string, salt: Uint8Array): Promise<CryptoKey> {
@@ -82,7 +83,7 @@ export class CryptoService {
 
   private async tickOtp() {
     try {
-      const step = Math.floor(Date.now() / 1000 / 30);
+      const step = this.currentStep();
       const left = 30 - (Math.floor(Date.now() / 1000) % 30);
       const subtle = subtleCrypto();
       if (!subtle) {
@@ -90,14 +91,7 @@ export class CryptoService {
         this.secondsLeft.set(left);
         return;
       }
-      const key = await subtle.importKey('raw', enc.encode('OTPChat-browser-TOTP'), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
-      const buf = new ArrayBuffer(8);
-      const view = new DataView(buf);
-      view.setUint32(4, step);
-      const hmac = new Uint8Array(await subtle.sign('HMAC', key, buf));
-      const offset = hmac[hmac.length - 1] & 0xf;
-      const code = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset + 1] & 0xff) << 16) | ((hmac[offset + 2] & 0xff) << 8) | (hmac[offset + 3] & 0xff);
-      this.otp.set(String(code % 1_000_000).padStart(6, '0'));
+      this.otp.set(await this.totpForStep(step));
       this.secondsLeft.set(left);
     } catch {
       this.otp.set('------');
@@ -140,6 +134,23 @@ export class CryptoService {
 
   private hex(buffer: ArrayBuffer): string {
     return Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  private currentStep(): number {
+    return Math.floor(Date.now() / 1000 / 30);
+  }
+
+  private async totpForStep(step: number): Promise<string> {
+    const subtle = subtleCrypto();
+    if (!subtle) return '------';
+    const key = await subtle.importKey('raw', enc.encode('OTPChat-browser-TOTP'), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const buf = new ArrayBuffer(8);
+    const view = new DataView(buf);
+    view.setUint32(4, step);
+    const hmac = new Uint8Array(await subtle.sign('HMAC', key, buf));
+    const offset = hmac[hmac.length - 1] & 0xf;
+    const code = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset + 1] & 0xff) << 16) | ((hmac[offset + 2] & 0xff) << 8) | (hmac[offset + 3] & 0xff);
+    return String(code % 1_000_000).padStart(6, '0');
   }
 
   private fallbackHash(value: string): string {

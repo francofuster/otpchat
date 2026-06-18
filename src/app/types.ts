@@ -42,4 +42,5 @@ export interface EncryptedPayload {
   iv: string;
   salt: string;
   ciphertext: string;
+  keyStep?: number;
 }

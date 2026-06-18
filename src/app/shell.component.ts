@@ -138,8 +138,7 @@ export class ShellComponent implements OnInit {
     const chat = this.selected();
     if (!chat) return;
     const res = await this.api.messages(chat.scope, chat.id);
-    const secret = await this.crypto.sharedSecret(chat.secret);
-    const decrypted = await Promise.all(res.messages.map(async (m) => ({ ...m, text: await this.crypto.decrypt(m.encrypted, secret) })));
+    const decrypted = await Promise.all(res.messages.map(async (m) => ({ ...m, text: await this.crypto.decrypt(m.encrypted, chat.secret) })));
     this.messages.set(decrypted);
     this.badge.update((b) => ({ ...b, [chat.id]: 0 }));
     setTimeout(() => this.scrollBottom(), 40);
@@ -150,8 +149,11 @@ export class ShellComponent implements OnInit {
     if (!chat || !this.draft.trim()) return;
     const text = this.draft.trim();
     this.draft = '';
-    const secret = await this.crypto.sharedSecret(chat.secret);
-    await this.api.sendMessage(chat.scope, chat.id, await this.crypto.encrypt(text, secret));
+    const encrypted = await this.crypto.encrypt(text, chat.secret);
+    const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
+    const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text };
+    this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
+    setTimeout(() => this.scrollBottom(), 40);
   }
 
   keydown(event: KeyboardEvent) {
@@ -298,9 +300,8 @@ export class ShellComponent implements OnInit {
     if (event.type === 'message:new') {
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
-        const secret = await this.crypto.sharedSecret(chat.secret);
-        event.message.text = await this.crypto.decrypt(event.message.encrypted, secret);
-        this.messages.update((items) => [...items, event.message]);
+        event.message.text = await this.crypto.decrypt(event.message.encrypted, chat.secret);
+        this.messages.update((items) => items.some((item) => item.id === event.message.id) ? items : [...items, event.message]);
         setTimeout(() => this.scrollBottom(), 40);
       } else {
         this.badge.update((b) => ({ ...b, [event.message.targetId]: (b[event.message.targetId] || 0) + 1 }));
