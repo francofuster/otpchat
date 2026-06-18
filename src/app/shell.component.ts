@@ -59,7 +59,14 @@ export class ShellComponent implements OnInit {
     const boot = setInterval(async () => {
       if (!this.auth.ready()) return;
       clearInterval(boot);
-      if (this.auth.user()) await this.load();
+      if (this.auth.user()) {
+        const pendingInvite = localStorage.getItem('otpchat_pending_invite');
+        if (pendingInvite) {
+          await this.router.navigate(['/invite', pendingInvite]);
+          return;
+        }
+        await this.load();
+      }
     }, 100);
     setInterval(() => this.pruneExpired(), 1000);
     window.visualViewport?.addEventListener('resize', () => document.documentElement.style.setProperty('--vvh', `${window.visualViewport?.height || window.innerHeight}px`));
@@ -80,6 +87,11 @@ export class ShellComponent implements OnInit {
     }
     try {
       this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
+      const pendingInvite = localStorage.getItem('otpchat_pending_invite');
+      if (pendingInvite) {
+        await this.router.navigate(['/invite', pendingInvite]);
+        return;
+      }
       await this.load();
     } catch (err: any) {
       const blocked = err.error?.blockedUntil ? ` Disponible ${this.countdown(err.error.blockedUntil)}` : '';
@@ -177,7 +189,7 @@ export class ShellComponent implements OnInit {
 
   async groupInvite() {
     const chat = this.selected();
-    if (chat?.scope !== 'group') return;
+    if (chat?.scope !== 'group' || chat.role !== 'admin') return;
     this.invite.set((await this.api.createGroupInvite(chat.id)).invitation);
     this.sheet.set('group');
   }

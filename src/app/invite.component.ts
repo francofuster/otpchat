@@ -44,6 +44,7 @@ export class InviteComponent implements OnInit {
   invite = signal<any>(null);
   error = signal('');
   private code = '';
+  private readonly pendingInviteKey = 'otpchat_pending_invite';
 
   constructor(public auth: AuthService, private api: ApiService, private route: ActivatedRoute, private router: Router) {}
 
@@ -52,7 +53,10 @@ export class InviteComponent implements OnInit {
     const wait = setInterval(async () => {
       if (!this.auth.ready()) return;
       clearInterval(wait);
-      if (!this.auth.user()) return;
+      if (!this.auth.user()) {
+        localStorage.setItem(this.pendingInviteKey, this.code);
+        return;
+      }
       try { this.invite.set(await this.api.getInvite(this.code)); }
       catch { this.error.set('La invitación venció, fue cancelada o no existe.'); }
     }, 100);
@@ -60,11 +64,13 @@ export class InviteComponent implements OnInit {
 
   async accept() {
     const res = await this.api.acceptInvite(this.code);
+    localStorage.removeItem(this.pendingInviteKey);
     await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId } });
   }
 
   async reject() {
     await this.api.rejectInvite(this.code);
+    localStorage.removeItem(this.pendingInviteKey);
     await this.router.navigate(['/']);
   }
 }

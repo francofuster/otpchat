@@ -312,6 +312,7 @@ app.post('/api/groups/join', auth, async (req, res) => {
 app.post('/api/groups/:id/invite', auth, async (req, res) => {
   const member = state().groupMembers.find((m) => m.groupId === req.params.id && m.userId === req.user.id);
   if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
+  if (member.role !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
   const code = nanoid(24);
   const link = `${clientOrigin}/invite/${code}`;
   const qr = await QRCode.toDataURL(link, { margin: 1, width: 320 });
