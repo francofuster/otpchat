@@ -130,6 +130,21 @@ function registerBlocked(ip, fingerprint) {
   return new Date(new Date(recent.createdAt).getTime() + 24 * 60 * 60_000).toISOString();
 }
 
+function timerPreference(userId, scope, targetId) {
+  return state().messageTimerPreferences.find((pref) => pref.userId === userId && pref.scope === scope && pref.targetId === targetId)?.timerSeconds || 0;
+}
+
+function setTimerPreference(userId, scope, targetId, timerSeconds) {
+  let preference = state().messageTimerPreferences.find((pref) => pref.userId === userId && pref.scope === scope && pref.targetId === targetId);
+  if (!preference) {
+    preference = { userId, scope, targetId, timerSeconds: 0, updatedAt: nowIso() };
+    state().messageTimerPreferences.push(preference);
+  }
+  preference.timerSeconds = timerSeconds;
+  preference.updatedAt = nowIso();
+  return preference;
+}
+
 app.post('/api/auth/register', registerLimiter, async (req, res) => {
   const { username, password, fingerprint } = req.body || {};
   if (!username || !password || !fingerprint) return res.status(400).json({ error: 'Faltan datos' });
@@ -215,11 +230,14 @@ app.get('/api/bootstrap', auth, (req, res) => {
     .filter((c) => c.userIds.includes(req.user.id))
     .map((c) => {
       const otherId = c.userIds.find((id) => id !== req.user.id);
-      return { ...c, other: publicUser(state().users.find((u) => u.id === otherId)) };
+      return { ...c, timerSeconds: timerPreference(req.user.id, 'contact', c.conversationId), other: publicUser(state().users.find((u) => u.id === otherId)) };
     });
   const groups = state().groupMembers
     .filter((m) => m.userId === req.user.id)
-    .map((m) => ({ ...state().groups.find((g) => g.id === m.groupId), role: m.role }))
+    .map((m) => {
+      const group = state().groups.find((g) => g.id === m.groupId);
+      return group ? { ...group, timerSeconds: timerPreference(req.user.id, 'group', group.id), role: m.role } : null;
+    })
     .filter(Boolean);
   res.json({ contacts, groups });
 });
@@ -329,9 +347,18 @@ app.patch('/api/conversations/:id/timer', auth, async (req, res) => {
   const timerSeconds = Number(req.body?.timerSeconds || 0);
   const contact = state().contacts.find((c) => c.conversationId === req.params.id && c.userIds.includes(req.user.id));
   if (!contact) return res.status(404).json({ error: 'Chat no encontrado' });
-  await mutate(() => (contact.timerSeconds = timerSeconds));
-  sendToConversation(contact.conversationId, { type: 'timer:changed', scope: 'contact', id: contact.conversationId, timerSeconds, by: req.user.username });
-  res.json({ contact });
+  await mutate(() => setTimerPreference(req.user.id, 'contact', contact.conversationId, timerSeconds));
+  res.json({ contact: { ...contact, timerSeconds } });
+});
+
+app.patch('/api/groups/:id/timer', auth, async (req, res) => {
+  const timerSeconds = Number(req.body?.timerSeconds || 0);
+  const member = state().groupMembers.find((m) => m.groupId === req.params.id && m.userId === req.user.id);
+  if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  await mutate(() => setTimerPreference(req.user.id, 'group', group.id, timerSeconds));
+  res.json({ group: { ...group, timerSeconds, role: member.role } });
 });
 
 app.patch('/api/groups/:id', auth, async (req, res) => {
@@ -366,9 +393,7 @@ app.post('/api/messages', auth, async (req, res) => {
     (scope === 'contact' && state().contacts.some((c) => c.conversationId === targetId && c.userIds.includes(req.user.id))) ||
     (scope === 'group' && state().groupMembers.some((m) => m.groupId === targetId && m.userId === req.user.id));
   if (!allowed || !encrypted?.ciphertext) return res.status(400).json({ error: 'Mensaje inválido' });
-  const timerSeconds = scope === 'group'
-    ? state().groups.find((g) => g.id === targetId)?.timerSeconds || 0
-    : state().contacts.find((c) => c.conversationId === targetId)?.timerSeconds || 0;
+  const timerSeconds = timerPreference(req.user.id, scope, targetId);
   const message = {
     id: makeId('msg'),
     scope,

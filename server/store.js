@@ -11,6 +11,7 @@ const collections = {
   groups: 'Group',
   groupMembers: 'GroupMember',
   messages: 'Message',
+  messageTimerPreferences: 'MessageTimerPreference',
   securityEvents: 'SecurityEvent'
 };
 
@@ -77,6 +78,7 @@ function repo(key) {
 
 function uniqueKeyFor(key, item) {
   if (key === 'groupMembers') return `${item.groupId}:${item.userId}`;
+  if (key === 'messageTimerPreferences') return `${item.userId}:${item.scope}:${item.targetId}`;
   return item.id;
 }
 
@@ -116,6 +118,7 @@ export async function saveStore() {
   await saveCollection('groups');
   await saveCollection('groupMembers');
   await saveCollection('messages');
+  await saveCollection('messageTimerPreferences');
   await saveCollection('securityEvents');
 }
 

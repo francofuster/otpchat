@@ -100,6 +100,20 @@ export const MessageEntity = new EntitySchema({
   indices: [{ name: 'idx_messages_scope_target', columns: ['scope', 'targetId'] }]
 });
 
+export const MessageTimerPreferenceEntity = new EntitySchema({
+  name: 'MessageTimerPreference',
+  tableName: 'message_timer_preferences',
+  columns: {
+    id: { type: 'integer', primary: true, generated: true },
+    userId: { type: 'varchar' },
+    scope: { type: 'varchar' },
+    targetId: { type: 'varchar' },
+    timerSeconds: { type: 'integer', default: 0 },
+    updatedAt: { type: 'text' }
+  },
+  indices: [{ name: 'idx_timer_preferences_unique', columns: ['userId', 'scope', 'targetId'], unique: true }]
+});
+
 export const SecurityEventEntity = new EntitySchema({
   name: 'SecurityEvent',
   tableName: 'security_events',
@@ -120,5 +134,6 @@ export const entities = [
   GroupEntity,
   GroupMemberEntity,
   MessageEntity,
+  MessageTimerPreferenceEntity,
   SecurityEventEntity
 ];

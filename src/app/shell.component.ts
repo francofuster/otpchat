@@ -202,7 +202,7 @@ export class ShellComponent implements OnInit {
     const timerSeconds = Number(seconds);
     chat.timerSeconds = timerSeconds;
     this.selected.set({ ...chat });
-    chat.scope === 'group' ? await this.api.updateGroup(chat.id, { timerSeconds } as any) : await this.api.updateContactTimer(chat.id, timerSeconds);
+    chat.scope === 'group' ? await this.api.updateGroupTimer(chat.id, timerSeconds) : await this.api.updateContactTimer(chat.id, timerSeconds);
   }
 
   async openAdmin() {

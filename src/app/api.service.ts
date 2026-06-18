@@ -56,6 +56,10 @@ export class ApiService {
     return firstValueFrom(this.http.patch(apiUrl(`/api/groups/${id}`), body));
   }
 
+  updateGroupTimer(id: string, timerSeconds: number) {
+    return firstValueFrom(this.http.patch(apiUrl(`/api/groups/${id}/timer`), { timerSeconds }));
+  }
+
   messages(scope: 'contact' | 'group', id: string) {
     return firstValueFrom(this.http.get<{ messages: ChatMessage[] }>(apiUrl(`/api/messages/${scope}/${id}`)));
   }

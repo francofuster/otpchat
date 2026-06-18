@@ -127,14 +127,14 @@
           <button class="back" (click)="back()"><svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
           <div class="title">
             <strong>{{ chat.title }}</strong>
-            @if (chat.timerSeconds) { <span class="banner">Mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
+            @if (chat.timerSeconds) { <span class="banner">Tus mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
           </div>
           <div class="otp" [class.warn]="crypto.secondsLeft() < 10" [class.danger]="crypto.secondsLeft() < 5">
             <span>{{ crypto.otp() }}</span>
             <div><i [style.width.%]="crypto.secondsLeft() / 30 * 100"></i></div>
             <small>{{ crypto.secondsLeft() }}s</small>
           </div>
-          <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Mensajes temporales">
+          <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes">
             @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
           </select>
           @if (chat.scope === 'group' && chat.role === 'admin') { <button title="QR del grupo" (click)="groupInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-6v-2h4zM14 18h2v2h-2z"/></svg></button> }
