@@ -126,8 +126,19 @@ button { border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, 
   .composer textarea { min-height: 42px; max-height: 92px; border-radius: 22px; }
   .send { height: 42px; }
   .sheet { left: 0; right: 0; bottom: 0; top: auto; width: 100%; max-height: 92dvh; transform: none; border-radius: 8px 8px 0 0; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
-  .sheet.qr-sheet { align-content: start; }
-  .sheet.qr-sheet img { width: min(280px, 82vw); }
+  .sheet.qr-sheet {
+    left: 14px;
+    right: 14px;
+    top: 50%;
+    bottom: auto;
+    width: auto;
+    max-height: min(86dvh, 560px);
+    transform: translateY(-50%);
+    align-content: start;
+    border-radius: 8px;
+    padding: 18px;
+  }
+  .sheet.qr-sheet img { width: min(260px, 76vw); }
   .stats { grid-template-columns: repeat(2, 1fr); }
   .table label { grid-template-columns: auto 1fr auto; }
   .table small { display: none; }
