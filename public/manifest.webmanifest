@@ -1,7 +1,9 @@
 {
   "name": "OTPChat",
   "short_name": "OTPChat",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f3f6fb",
   "theme_color": "#334155",

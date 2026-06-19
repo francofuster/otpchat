@@ -255,6 +255,27 @@
         }
       </div>
       <div class="settings-block">
+        <h3>Notificaciones</h3>
+        <p class="hint">Cuando llegue un mensaje, la alerta solo dira "Mensajes nuevos".</p>
+        <button (click)="toggleNotifications()">
+          @if (notificationsEnabled()) {
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            Deshabilitar notificaciones
+          } @else {
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            Habilitar notificaciones
+          }
+        </button>
+      </div>
+      <div class="settings-block">
+        <h3>Acceso directo</h3>
+        <p class="hint">Instala OTPChat para abrirlo desde el inicio como una app.</p>
+        <button (click)="installApp()" [disabled]="standaloneMode()">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+          {{ standaloneMode() ? 'Ya instalado' : 'Crear acceso directo' }}
+        </button>
+      </div>
+      <div class="settings-block">
         <h3>Nombre de usuario</h3>
         <div class="inline-form">
           <input [(ngModel)]="accountUsername" placeholder="Nuevo usuario">

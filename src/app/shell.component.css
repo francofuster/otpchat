@@ -97,6 +97,7 @@ button { border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, 
 .action-list .danger-action, .danger-action { background: color-mix(in srgb, var(--danger) 18%, var(--panel)); color: var(--danger); display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-height: 46px; text-align: left; }
 .settings-block { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .settings-block h3 { margin: 0; font-size: 14px; }
+.settings-block .hint { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
 .inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 
 @media (max-width: 760px) {

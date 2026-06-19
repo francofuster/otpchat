@@ -29,6 +29,10 @@ export class ShellComponent implements OnInit {
   showRepeatPassword = false;
   showNewPassword = false;
   showAccountPassword = false;
+  notificationsEnabled = signal(localStorage.getItem('otpchat_notifications') === 'on');
+  notificationPermission = signal(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
+  deferredInstallPrompt = signal<any>(null);
+  standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
   darkMode = signal(localStorage.getItem('otpchat_theme') === 'dark');
   authMode: 'login' | 'register' = 'login';
   authError = signal('');
@@ -75,6 +79,15 @@ export class ShellComponent implements OnInit {
     }, 100);
     setInterval(() => this.pruneExpired(), 1000);
     window.visualViewport?.addEventListener('resize', () => document.documentElement.style.setProperty('--vvh', `${window.visualViewport?.height || window.innerHeight}px`));
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      this.deferredInstallPrompt.set(event);
+    });
+    window.addEventListener('appinstalled', () => {
+      this.deferredInstallPrompt.set(null);
+      this.standaloneMode.set(true);
+      this.api.toast('Acceso directo creado');
+    });
   }
 
   async login() {
@@ -429,6 +442,39 @@ export class ShellComponent implements OnInit {
     }
   }
 
+  async toggleNotifications() {
+    if (typeof Notification === 'undefined' || !window.isSecureContext) {
+      this.api.toast('Las notificaciones requieren HTTPS o localhost.');
+      return;
+    }
+    if (this.notificationsEnabled()) {
+      localStorage.setItem('otpchat_notifications', 'off');
+      this.notificationsEnabled.set(false);
+      this.api.toast('Notificaciones desactivadas');
+      return;
+    }
+    const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+    this.notificationPermission.set(permission);
+    if (permission !== 'granted') {
+      this.api.toast('Permiso de notificaciones denegado');
+      return;
+    }
+    localStorage.setItem('otpchat_notifications', 'on');
+    this.notificationsEnabled.set(true);
+    this.api.toast('Notificaciones activadas');
+  }
+
+  async installApp() {
+    const prompt = this.deferredInstallPrompt();
+    if (!prompt) {
+      this.api.toast(this.standaloneMode() ? 'Ya esta instalado como app.' : 'Usa el menu del navegador para agregar a pantalla de inicio.');
+      return;
+    }
+    await prompt.prompt();
+    await prompt.userChoice.catch(() => null);
+    this.deferredInstallPrompt.set(null);
+  }
+
   passwordErrors(password: string) {
     const errors: string[] = [];
     if (password.length <= 6) errors.push('mas de 6 caracteres');
@@ -480,6 +526,7 @@ export class ShellComponent implements OnInit {
     if (event.type?.startsWith('group:')) await this.load();
     if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
     if (event.type === 'message:new') {
+      if (event.message.senderId !== this.auth.user()?.id) void this.notifyNewMessage();
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
         const secret = this.secrets.getVersion(chat.scope, chat.id, event.message.encrypted.keyVersion || 1) || chat.secret;
@@ -504,6 +551,20 @@ export class ShellComponent implements OnInit {
   private scrollBottom() {
     const box = this.scrollbox?.nativeElement;
     if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  private async notifyNewMessage() {
+    if (!this.notificationsEnabled() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+    const options = { tag: 'otpchat-messages', renotify: false, icon: '/icons/icon.svg', badge: '/icons/icon.svg' };
+    try {
+      const registration = await navigator.serviceWorker?.ready;
+      if (registration) {
+        await registration.showNotification('Mensajes nuevos', options);
+        return;
+      }
+    } catch {}
+    new Notification('Mensajes nuevos', options);
   }
 
   private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string): string {
