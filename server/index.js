@@ -120,10 +120,16 @@ function canModerate(role) {
   return role === 'admin' || role === 'subadmin';
 }
 
+function groupRole(group, userId) {
+  if (!group) return null;
+  if (group.founderId === userId) return 'admin';
+  return groupMember(group.id, userId)?.role || null;
+}
+
 function groupPayload(group, userId) {
   if (!group) return null;
   const member = groupMember(group.id, userId);
-  return { ...group, keyVersion: group.keyVersion || 1, joinedAt: member?.joinedAt, timerSeconds: timerPreference(userId, 'group', group.id), role: member?.role };
+  return { ...group, keyVersion: group.keyVersion || 1, joinedAt: member?.joinedAt, timerSeconds: timerPreference(userId, 'group', group.id), role: groupRole(group, userId) };
 }
 
 function publicGroupMember(member) {
@@ -344,11 +350,11 @@ app.post('/api/groups/join', auth, async (req, res) => {
 app.post('/api/groups/:id/invite', auth, async (req, res) => {
   const member = state().groupMembers.find((m) => m.groupId === req.params.id && m.userId === req.user.id);
   if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
-  if (!canModerate(member.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
-  const code = nanoid(24);
-  const link = inviteLink(code);
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  if (!canModerate(groupRole(group, req.user.id))) return res.status(403).json({ error: 'Requiere admin o subadmin' });
+  const code = nanoid(24);
+  const link = inviteLink(code);
   const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, keyVersion: group.keyVersion || 1, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
   await mutate((db) => db.invitations.push(invitation));
   res.json({ invitation });
@@ -356,9 +362,10 @@ app.post('/api/groups/:id/invite', auth, async (req, res) => {
 
 app.patch('/api/groups/:id/key-version', auth, async (req, res) => {
   const member = groupMember(req.params.id, req.user.id);
-  if (!member || member.role !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
+  if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  if (groupRole(group, req.user.id) !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
   const keyVersion = Number(req.body?.keyVersion || 0);
   if (keyVersion <= (group.keyVersion || 1)) return res.status(400).json({ error: 'Version invalida' });
   await mutate(() => {
@@ -404,9 +411,10 @@ app.patch('/api/groups/:id', auth, async (req, res) => {
 
 app.get('/api/groups/:id/members', auth, (req, res) => {
   const member = groupMember(req.params.id, req.user.id);
-  if (!member || !canModerate(member.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
+  if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  if (!canModerate(groupRole(group, req.user.id))) return res.status(403).json({ error: 'Requiere admin o subadmin' });
   const members = state().groupMembers
     .filter((m) => m.groupId === group.id)
     .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime())
@@ -417,9 +425,10 @@ app.get('/api/groups/:id/members', auth, (req, res) => {
 
 app.patch('/api/groups/:id/members/roles', auth, async (req, res) => {
   const actor = groupMember(req.params.id, req.user.id);
-  if (!actor || actor.role !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
+  if (!actor) return res.status(403).json({ error: 'No perteneces al grupo' });
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  if (groupRole(group, req.user.id) !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   const role = req.body?.role === 'subadmin' ? 'subadmin' : 'member';
   await mutate(() => {
@@ -435,13 +444,15 @@ app.patch('/api/groups/:id/members/roles', auth, async (req, res) => {
 
 app.delete('/api/groups/:id/members', auth, async (req, res) => {
   const actor = groupMember(req.params.id, req.user.id);
-  if (!actor || !canModerate(actor.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
+  if (!actor) return res.status(403).json({ error: 'No perteneces al grupo' });
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const actorRole = groupRole(group, req.user.id);
+  if (!canModerate(actorRole)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
   const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids : []);
   ids.delete(req.user.id);
   ids.delete(group.founderId);
-  if (actor.role === 'subadmin') {
+  if (actorRole === 'subadmin') {
     for (const member of state().groupMembers.filter((m) => ids.has(m.userId))) {
       if (member.role === 'admin' || member.role === 'subadmin') ids.delete(member.userId);
     }
@@ -489,7 +500,7 @@ app.delete('/api/groups/:id', auth, async (req, res) => {
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
   const member = groupMember(group.id, req.user.id);
-  if (!member || member.role !== 'admin' || group.founderId !== req.user.id) {
+  if (!member || groupRole(group, req.user.id) !== 'admin' || group.founderId !== req.user.id) {
     return res.status(403).json({ error: 'Solo admin principal' });
   }
   const memberIds = state().groupMembers.filter((m) => m.groupId === group.id).map((m) => m.userId);

@@ -206,7 +206,7 @@ export class ShellComponent implements OnInit {
 
   async groupInvite() {
     const chat = this.selected();
-    if (chat?.scope !== 'group' || !this.canModerate(chat.role)) return;
+    if (chat?.scope !== 'group' || !this.canModerateChat(chat)) return;
     if (!chat.secret) {
       this.api.toast('Falta la llave local del grupo en este dispositivo.');
       return;
@@ -233,7 +233,7 @@ export class ShellComponent implements OnInit {
       this.api.toast('Falta la llave actual para renovar este chat.');
       return;
     }
-    if (chat.scope === 'group' && chat.role !== 'admin') {
+    if (chat.scope === 'group' && !this.isGroupOwner(chat)) {
       this.api.toast('Solo el admin principal puede renovar la clave del grupo.');
       return;
     }
@@ -257,7 +257,7 @@ export class ShellComponent implements OnInit {
     if (chat.scope === 'contact') {
       await this.api.deleteContact(chat.id);
       this.api.toast('Chat eliminado');
-    } else if (chat.role === 'admin') {
+    } else if (this.isGroupOwner(chat)) {
       await this.api.deleteGroup(chat.id);
       this.api.toast('Grupo eliminado');
     }
@@ -280,7 +280,7 @@ export class ShellComponent implements OnInit {
 
   async openMembers() {
     const chat = this.selected();
-    if (chat?.scope !== 'group' || !this.canModerate(chat.role)) return;
+    if (chat?.scope !== 'group' || !this.canModerateChat(chat)) return;
     const res = await this.api.groupMembers(chat.id);
     this.groupMembers.set(res.members);
     this.selectedMembers.set(new Set());
@@ -305,7 +305,7 @@ export class ShellComponent implements OnInit {
   async setSelectedMembersRole(role: 'subadmin' | 'member') {
     const chat = this.selected();
     const ids = [...this.selectedMembers()];
-    if (chat?.scope !== 'group' || chat.role !== 'admin' || !ids.length) return;
+    if (chat?.scope !== 'group' || !this.isGroupOwner(chat) || !ids.length) return;
     await this.api.updateGroupMemberRoles(chat.id, ids, role);
     this.api.toast(role === 'subadmin' ? 'Subadmin asignado' : 'Rol actualizado');
     await this.openMembers();
@@ -494,6 +494,14 @@ export class ShellComponent implements OnInit {
 
   canModerate(role?: string) {
     return role === 'admin' || role === 'subadmin';
+  }
+
+  isGroupOwner(chat?: { scope: 'contact' | 'group'; founderId?: string } | null) {
+    return chat?.scope === 'group' && chat.founderId === this.auth.user()?.id;
+  }
+
+  canModerateChat(chat?: { scope: 'contact' | 'group'; role?: string; founderId?: string } | null) {
+    return !!chat && chat.scope === 'group' && (this.isGroupOwner(chat) || this.canModerate(chat.role));
   }
 
   roleLabel(role?: string) {
