@@ -1,7 +1,7 @@
 import { CommonModule, DatePipe } from '@angular/common';
 import { Component, ElementRef, OnInit, ViewChild, computed, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, Router } from '@angular/router';
+import { Router } from '@angular/router';
 import { ApiService } from './api.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
@@ -53,7 +53,6 @@ export class ShellComponent implements OnInit {
     public crypto: CryptoService,
     public api: ApiService,
     private secrets: SecretService,
-    private route: ActivatedRoute,
     private router: Router
   ) {}
 
@@ -118,7 +117,8 @@ export class ShellComponent implements OnInit {
     this.groups.set(data.groups);
     this.syncSelectedFromBootstrap(data.contacts, data.groups);
     this.api.connect((event) => void this.onSocket(event));
-    const open = this.route.snapshot.queryParamMap.get('open');
+    const open = history.state?.open;
+    if (open) history.replaceState({ ...history.state, open: null }, '', '/#/');
     const contact = data.contacts.find((c) => c.conversationId === open);
     const group = data.groups.find((g) => g.id === open);
     if (contact) await this.openContact(contact);

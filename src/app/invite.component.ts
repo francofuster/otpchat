@@ -86,8 +86,7 @@ export class InviteComponent implements OnInit {
     if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key, this.keyVersion);
     if (res.groupId) this.secrets.save('group', res.groupId, this.key, Number(res.keyVersion || this.keyVersion));
     localStorage.removeItem(this.pendingInviteKey);
-    history.replaceState(null, '', '/#/');
-    await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId }, replaceUrl: true });
+    await this.router.navigate(['/'], { state: { open: res.conversationId || res.groupId }, replaceUrl: true });
   }
 
   async reject() {
