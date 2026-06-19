@@ -183,7 +183,10 @@
     @if (openSheet === 'contact' && invite()) {
       <h2>Invitacion de contacto</h2>
       <img [src]="invite().qr" alt="QR de invitacion">
-      <input [value]="invite().link" readonly>
+      <div class="copy-link">
+        <input [value]="invite().link" readonly>
+        <button type="button" title="Copiar link" (click)="copyInviteLink(invite().link)"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
       <p>Esperando que alguien acepte... vence en {{ countdown(invite().expiresAt) }}</p>
       <button (click)="api.cancelInvite(invite().code); sheet.set(null)">Cancelar invitacion</button>
     }
@@ -191,7 +194,10 @@
       @if (invite()) {
         <h2>QR del grupo</h2>
         <img [src]="invite().qr" alt="QR de grupo">
-        <input [value]="invite().link" readonly>
+        <div class="copy-link">
+          <input [value]="invite().link" readonly>
+          <button type="button" title="Copiar link" (click)="copyInviteLink(invite().link)"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        </div>
       } @else {
         <h2>Crear grupo</h2>
         <input [(ngModel)]="groupName" placeholder="Nombre del grupo">

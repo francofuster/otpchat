@@ -243,6 +243,23 @@ export class ShellComponent implements OnInit {
     setTimeout(() => this.scrollBottom(), 40);
   }
 
+  async copyInviteLink(link: string) {
+    try {
+      await navigator.clipboard.writeText(link);
+      this.api.toast('Link copiado');
+    } catch {
+      const input = document.createElement('textarea');
+      input.value = link;
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+      this.api.toast('Link copiado');
+    }
+  }
+
   async openAdmin() {
     this.sheet.set('admin');
     this.adminStats.set(await this.api.adminStats());

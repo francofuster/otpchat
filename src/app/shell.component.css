@@ -78,6 +78,9 @@ button { border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, 
 .sheet { position: fixed; z-index: 11; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(620px, calc(100vw - 28px)); max-height: min(86dvh, 720px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 20px; box-shadow: 0 22px 70px var(--shadow); display: grid; gap: 12px; }
 .sheet h2 { margin: 4px 0; }
 .sheet img { width: min(320px, 100%); justify-self: center; border: 1px solid var(--line); border-radius: 8px; }
+.copy-link { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; }
+.copy-link input { min-width: 0; }
+.copy-link button { height: 44px; padding: 0; background: var(--blue); color: #fff; }
 .close { position: sticky; top: 0; margin-left: auto; }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .stats b { background: color-mix(in srgb, var(--panel) 75%, var(--blue) 12%); border-radius: 8px; padding: 12px; font-size: 22px; }
@@ -145,6 +148,8 @@ button { border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, 
   .sheet.qr-sheet h2 { font-size: 18px; margin: 0; }
   .sheet.qr-sheet img { width: min(220px, 70vw); }
   .sheet.qr-sheet input { font-size: 12px; padding: 9px 10px; }
+  .sheet.qr-sheet .copy-link { grid-template-columns: minmax(0, 1fr) 40px; gap: 6px; }
+  .sheet.qr-sheet .copy-link button { height: 40px; }
   .sheet.qr-sheet p { margin: 0; font-size: 13px; line-height: 1.35; }
   .stats { grid-template-columns: repeat(2, 1fr); }
   .table label { grid-template-columns: auto 1fr auto; }
