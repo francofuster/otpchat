@@ -116,6 +116,7 @@ export class ShellComponent implements OnInit {
     const data = await this.api.bootstrap();
     this.contacts.set(data.contacts);
     this.groups.set(data.groups);
+    this.syncSelectedFromBootstrap(data.contacts, data.groups);
     this.api.connect((event) => void this.onSocket(event));
     const open = this.route.snapshot.queryParamMap.get('open');
     const contact = data.contacts.find((c) => c.conversationId === open);
@@ -497,5 +498,34 @@ export class ShellComponent implements OnInit {
 
   roleLabel(role?: string) {
     return role === 'admin' ? 'Admin principal' : role === 'subadmin' ? 'Subadmin' : 'Miembro';
+  }
+
+  private syncSelectedFromBootstrap(contacts: Contact[], groups: Group[]) {
+    const chat = this.selected();
+    if (!chat) return;
+    if (chat.scope === 'contact') {
+      if (!contacts.some((contact) => contact.conversationId === chat.id)) {
+        this.selected.set(null);
+        this.messages.set([]);
+        this.panel = 'list';
+      }
+      return;
+    }
+    const group = groups.find((item) => item.id === chat.id);
+    if (!group) {
+      this.selected.set(null);
+      this.messages.set([]);
+      this.panel = 'list';
+      return;
+    }
+    this.selected.set({
+      ...chat,
+      title: group.name,
+      role: group.role,
+      founderId: group.founderId,
+      joinedAt: group.joinedAt,
+      keyVersion: Math.max(chat.keyVersion, group.keyVersion || 1),
+      timerSeconds: group.timerSeconds
+    });
   }
 }
