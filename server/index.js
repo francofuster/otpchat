@@ -112,6 +112,25 @@ function sendToGroup(groupId, event) {
   for (const member of members) sendToUser(member.userId, event);
 }
 
+function groupMember(groupId, userId) {
+  return state().groupMembers.find((m) => m.groupId === groupId && m.userId === userId);
+}
+
+function canModerate(role) {
+  return role === 'admin' || role === 'subadmin';
+}
+
+function groupPayload(group, userId) {
+  if (!group) return null;
+  const member = groupMember(group.id, userId);
+  return { ...group, timerSeconds: timerPreference(userId, 'group', group.id), role: member?.role };
+}
+
+function publicGroupMember(member) {
+  const user = publicUser(state().users.find((u) => u.id === member.userId));
+  return user ? { ...member, user } : null;
+}
+
 async function cleanupExpiredMessages() {
   const before = state().messages.length;
   await mutate((db) => {
@@ -235,7 +254,7 @@ app.get('/api/bootstrap', auth, (req, res) => {
     .filter((m) => m.userId === req.user.id)
     .map((m) => {
       const group = state().groups.find((g) => g.id === m.groupId);
-      return group ? { ...group, timerSeconds: timerPreference(req.user.id, 'group', group.id), role: m.role } : null;
+      return groupPayload(group, req.user.id);
     })
     .filter(Boolean);
   res.json({ contacts, groups });
@@ -325,7 +344,7 @@ app.post('/api/groups/join', auth, async (req, res) => {
 app.post('/api/groups/:id/invite', auth, async (req, res) => {
   const member = state().groupMembers.find((m) => m.groupId === req.params.id && m.userId === req.user.id);
   if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
-  if (member.role !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
+  if (!canModerate(member.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
   const code = nanoid(24);
   const link = inviteLink(code);
   const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
@@ -362,6 +381,120 @@ app.patch('/api/groups/:id', auth, async (req, res) => {
   });
   sendToGroup(group.id, { type: 'group:updated', group });
   res.json({ group });
+});
+
+app.get('/api/groups/:id/members', auth, (req, res) => {
+  const member = groupMember(req.params.id, req.user.id);
+  if (!member || !canModerate(member.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const members = state().groupMembers
+    .filter((m) => m.groupId === group.id)
+    .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime())
+    .map(publicGroupMember)
+    .filter(Boolean);
+  res.json({ group, members });
+});
+
+app.patch('/api/groups/:id/members/roles', auth, async (req, res) => {
+  const actor = groupMember(req.params.id, req.user.id);
+  if (!actor || actor.role !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const role = req.body?.role === 'subadmin' ? 'subadmin' : 'member';
+  await mutate(() => {
+    for (const id of ids) {
+      if (id === group.founderId) continue;
+      const member = groupMember(group.id, id);
+      if (member) member.role = role;
+    }
+  });
+  sendToGroup(group.id, { type: 'group:members_updated', groupId: group.id });
+  res.json({ ok: true });
+});
+
+app.delete('/api/groups/:id/members', auth, async (req, res) => {
+  const actor = groupMember(req.params.id, req.user.id);
+  if (!actor || !canModerate(actor.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids : []);
+  ids.delete(req.user.id);
+  ids.delete(group.founderId);
+  if (actor.role === 'subadmin') {
+    for (const member of state().groupMembers.filter((m) => ids.has(m.userId))) {
+      if (member.role === 'admin' || member.role === 'subadmin') ids.delete(member.userId);
+    }
+  }
+  await mutate((db) => {
+    db.groupMembers = db.groupMembers.filter((m) => !(m.groupId === group.id && ids.has(m.userId)));
+  });
+  for (const id of ids) sendToUser(id, { type: 'group:removed', groupId: group.id });
+  sendToGroup(group.id, { type: 'group:members_updated', groupId: group.id });
+  res.json({ removed: [...ids] });
+});
+
+app.delete('/api/groups/:id/leave', auth, async (req, res) => {
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const member = groupMember(group.id, req.user.id);
+  if (!member) return res.status(404).json({ error: 'No perteneces al grupo' });
+  let deleted = false;
+  let newOwner = null;
+  await mutate((db) => {
+    db.groupMembers = db.groupMembers.filter((m) => !(m.groupId === group.id && m.userId === req.user.id));
+    const remaining = db.groupMembers
+      .filter((m) => m.groupId === group.id)
+      .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
+    if (!remaining.length) {
+      deleted = true;
+      db.groups = db.groups.filter((g) => g.id !== group.id);
+      db.messages = db.messages.filter((m) => !(m.scope === 'group' && m.targetId === group.id));
+      db.invitations = db.invitations.filter((i) => i.groupId !== group.id);
+      db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
+      return;
+    }
+    if (group.founderId === req.user.id) {
+      newOwner = remaining[0];
+      group.founderId = newOwner.userId;
+      newOwner.role = 'admin';
+    }
+  });
+  sendToUser(req.user.id, { type: 'group:left', groupId: group.id });
+  if (!deleted) sendToGroup(group.id, { type: 'group:members_updated', groupId: group.id, ownerId: newOwner?.userId });
+  res.json({ left: true, deleted, ownerId: newOwner?.userId });
+});
+
+app.delete('/api/groups/:id', auth, async (req, res) => {
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const member = groupMember(group.id, req.user.id);
+  if (!member || member.role !== 'admin' || group.founderId !== req.user.id) {
+    return res.status(403).json({ error: 'Solo admin principal' });
+  }
+  const memberIds = state().groupMembers.filter((m) => m.groupId === group.id).map((m) => m.userId);
+  await mutate((db) => {
+    db.groups = db.groups.filter((g) => g.id !== group.id);
+    db.groupMembers = db.groupMembers.filter((m) => m.groupId !== group.id);
+    db.messages = db.messages.filter((m) => !(m.scope === 'group' && m.targetId === group.id));
+    db.invitations = db.invitations.filter((i) => i.groupId !== group.id);
+    db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
+  });
+  for (const id of memberIds) sendToUser(id, { type: 'group:deleted', groupId: group.id });
+  res.json({ deleted: true });
+});
+
+app.delete('/api/conversations/:id', auth, async (req, res) => {
+  const contact = state().contacts.find((c) => c.conversationId === req.params.id && c.userIds.includes(req.user.id));
+  if (!contact) return res.status(404).json({ error: 'Chat no encontrado' });
+  await mutate((db) => {
+    db.contacts = db.contacts.filter((c) => c.id !== contact.id);
+    db.messages = db.messages.filter((m) => !(m.scope === 'contact' && m.targetId === contact.conversationId));
+    db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'contact' && p.targetId === contact.conversationId));
+  });
+  sendToConversation(contact.conversationId, { type: 'contact:deleted', conversationId: contact.conversationId });
+  res.json({ deleted: true });
 });
 
 app.get('/api/messages/:scope/:id', auth, (req, res) => {

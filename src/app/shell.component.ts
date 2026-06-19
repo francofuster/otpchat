@@ -6,7 +6,7 @@ import { ApiService } from './api.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
 import { SecretService } from './secret.service';
-import { ChatMessage, Contact, Group } from './types';
+import { ChatMessage, Contact, Group, GroupMember } from './types';
 
 const timers = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
 
@@ -32,15 +32,17 @@ export class ShellComponent implements OnInit {
   contacts = signal<Contact[]>([]);
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
-  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string } | null>(null);
+  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
-  sheet = signal<'contact' | 'group' | 'admin' | null>(null);
+  sheet = signal<'contact' | 'group' | 'members' | 'admin' | null>(null);
   invite = signal<any>(null);
   groupName = '';
   badge = signal<Record<string, number>>({});
   adminStats = signal<any>(null);
   adminUsers = signal<any[]>([]);
+  groupMembers = signal<GroupMember[]>([]);
+  selectedMembers = signal<Set<string>>(new Set());
   selectedUsers = signal<Set<string>>(new Set());
   tempPassword = signal('');
   timers = timers;
@@ -132,7 +134,7 @@ export class ShellComponent implements OnInit {
 
   async openGroup(group: Group) {
     const secret = this.secrets.get('group', group.id);
-    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: group.timerSeconds, role: group.role });
+    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId });
     await this.loadMessages();
     this.panel = 'chat';
   }
@@ -203,7 +205,7 @@ export class ShellComponent implements OnInit {
 
   async groupInvite() {
     const chat = this.selected();
-    if (chat?.scope !== 'group' || chat.role !== 'admin') return;
+    if (chat?.scope !== 'group' || !this.canModerate(chat.role)) return;
     if (!chat.secret) {
       this.api.toast('Falta la llave local del grupo en este dispositivo.');
       return;
@@ -241,6 +243,66 @@ export class ShellComponent implements OnInit {
     this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
     this.api.toast('Clave renovada para futuros mensajes');
     setTimeout(() => this.scrollBottom(), 40);
+  }
+
+  async deleteCurrentChat() {
+    const chat = this.selected();
+    if (!chat) return;
+    if (chat.scope === 'contact') {
+      await this.api.deleteContact(chat.id);
+      this.api.toast('Chat eliminado');
+    } else if (chat.role === 'admin') {
+      await this.api.deleteGroup(chat.id);
+      this.api.toast('Grupo eliminado');
+    }
+    this.selected.set(null);
+    this.messages.set([]);
+    this.panel = 'list';
+    await this.load();
+  }
+
+  async leaveCurrentGroup() {
+    const chat = this.selected();
+    if (chat?.scope !== 'group') return;
+    await this.api.leaveGroup(chat.id);
+    this.api.toast('Saliste del grupo');
+    this.selected.set(null);
+    this.messages.set([]);
+    this.panel = 'list';
+    await this.load();
+  }
+
+  async openMembers() {
+    const chat = this.selected();
+    if (chat?.scope !== 'group' || !this.canModerate(chat.role)) return;
+    const res = await this.api.groupMembers(chat.id);
+    this.groupMembers.set(res.members);
+    this.selectedMembers.set(new Set());
+    this.sheet.set('members');
+  }
+
+  toggleMember(id: string) {
+    const next = new Set(this.selectedMembers());
+    next.has(id) ? next.delete(id) : next.add(id);
+    this.selectedMembers.set(next);
+  }
+
+  async removeSelectedMembers() {
+    const chat = this.selected();
+    const ids = [...this.selectedMembers()];
+    if (chat?.scope !== 'group' || !ids.length) return;
+    await this.api.removeGroupMembers(chat.id, ids);
+    this.api.toast('Miembros eliminados');
+    await this.openMembers();
+  }
+
+  async setSelectedMembersRole(role: 'subadmin' | 'member') {
+    const chat = this.selected();
+    const ids = [...this.selectedMembers()];
+    if (chat?.scope !== 'group' || chat.role !== 'admin' || !ids.length) return;
+    await this.api.updateGroupMemberRoles(chat.id, ids, role);
+    this.api.toast(role === 'subadmin' ? 'Subadmin asignado' : 'Rol actualizado');
+    await this.openMembers();
   }
 
   async copyInviteLink(link: string) {
@@ -352,6 +414,23 @@ export class ShellComponent implements OnInit {
         this.api.toast('Invitación aceptada');
       }
     }
+    if (['group:removed', 'group:left', 'group:deleted'].includes(event.type)) {
+      if (this.selected()?.id === event.groupId) {
+        this.selected.set(null);
+        this.messages.set([]);
+        this.panel = 'list';
+        this.sheet.set(null);
+      }
+      await this.load();
+    }
+    if (event.type === 'contact:deleted') {
+      if (this.selected()?.id === event.conversationId) {
+        this.selected.set(null);
+        this.messages.set([]);
+        this.panel = 'list';
+      }
+      await this.load();
+    }
     if (event.type?.startsWith('group:')) await this.load();
     if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
     if (event.type === 'message:new') {
@@ -405,5 +484,13 @@ export class ShellComponent implements OnInit {
     } catch {
       return { code: raw };
     }
+  }
+
+  canModerate(role?: string) {
+    return role === 'admin' || role === 'subadmin';
+  }
+
+  roleLabel(role?: string) {
+    return role === 'admin' ? 'Admin principal' : role === 'subadmin' ? 'Subadmin' : 'Miembro';
   }
 }

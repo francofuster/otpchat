@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { ChatMessage, Contact, Group } from './types';
+import { ChatMessage, Contact, Group, GroupMember } from './types';
 import { AuthService } from './auth.service';
 import { apiUrl, wsUrl } from './runtime-config';
 
@@ -42,6 +42,30 @@ export class ApiService {
 
   createGroupInvite(id: string) {
     return firstValueFrom(this.http.post<{ invitation: any }>(apiUrl(`/api/groups/${id}/invite`), {}));
+  }
+
+  groupMembers(id: string) {
+    return firstValueFrom(this.http.get<{ group: Group; members: GroupMember[] }>(apiUrl(`/api/groups/${id}/members`)));
+  }
+
+  updateGroupMemberRoles(id: string, ids: string[], role: 'subadmin' | 'member') {
+    return firstValueFrom(this.http.patch(apiUrl(`/api/groups/${id}/members/roles`), { ids, role }));
+  }
+
+  removeGroupMembers(id: string, ids: string[]) {
+    return firstValueFrom(this.http.delete<{ removed: string[] }>(apiUrl(`/api/groups/${id}/members`), { body: { ids } }));
+  }
+
+  leaveGroup(id: string) {
+    return firstValueFrom(this.http.delete<{ left: boolean; deleted: boolean; ownerId?: string }>(apiUrl(`/api/groups/${id}/leave`)));
+  }
+
+  deleteGroup(id: string) {
+    return firstValueFrom(this.http.delete<{ deleted: boolean }>(apiUrl(`/api/groups/${id}`)));
+  }
+
+  deleteContact(id: string) {
+    return firstValueFrom(this.http.delete<{ deleted: boolean }>(apiUrl(`/api/conversations/${id}`)));
   }
 
   updateContactTimer(id: string, timerSeconds: number) {

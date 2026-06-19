@@ -21,7 +21,16 @@ export interface Group {
   name: string;
   founderId: string;
   timerSeconds: number;
-  role: 'admin' | 'member';
+  role: 'admin' | 'subadmin' | 'member';
+}
+
+export interface GroupMember {
+  id: number;
+  groupId: string;
+  userId: string;
+  role: 'admin' | 'subadmin' | 'member';
+  joinedAt: string;
+  user: User;
 }
 
 export interface ChatMessage {
