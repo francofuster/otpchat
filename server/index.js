@@ -123,7 +123,7 @@ function canModerate(role) {
 function groupPayload(group, userId) {
   if (!group) return null;
   const member = groupMember(group.id, userId);
-  return { ...group, timerSeconds: timerPreference(userId, 'group', group.id), role: member?.role };
+  return { ...group, keyVersion: group.keyVersion || 1, joinedAt: member?.joinedAt, timerSeconds: timerPreference(userId, 'group', group.id), role: member?.role };
 }
 
 function publicGroupMember(member) {
@@ -301,10 +301,9 @@ app.post('/api/invitations/:code/accept', auth, async (req, res) => {
   if (invitation.type === 'group') {
     const exists = state().groupMembers.some((m) => m.groupId === invitation.groupId && m.userId === req.user.id);
     if (!exists) state().groupMembers.push({ groupId: invitation.groupId, userId: req.user.id, role: 'member', joinedAt: nowIso() });
-    invitation.status = 'accepted';
     await mutate(() => {});
     sendToGroup(invitation.groupId, { type: 'group:member_joined', groupId: invitation.groupId, user: publicUser(req.user) });
-    return res.json({ groupId: invitation.groupId });
+    return res.json({ groupId: invitation.groupId, keyVersion: invitation.keyVersion || 1 });
   }
   if (invitation.inviterId === req.user.id) return res.status(400).json({ error: 'No puedes aceptarte a ti mismo' });
   const conversationId = conversationIdForUsers(invitation.inviterId, req.user.id);
@@ -322,6 +321,7 @@ app.post('/api/invitations/:code/accept', auth, async (req, res) => {
 app.post('/api/invitations/:code/reject', auth, async (req, res) => {
   const invitation = state().invitations.find((i) => i.code === req.params.code);
   if (!invitation) return res.status(404).json({ error: 'No encontrada' });
+  if (invitation.type === 'group') return res.json({ ok: true });
   await mutate(() => (invitation.status = 'rejected'));
   sendToUser(invitation.inviterId, { type: 'invitation:rejected', invitation });
   res.json({ ok: true });
@@ -329,7 +329,7 @@ app.post('/api/invitations/:code/reject', auth, async (req, res) => {
 
 app.post('/api/groups', auth, async (req, res) => {
   const { name } = req.body || {};
-  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, timerSeconds: 0, createdAt: nowIso() };
+  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, keyVersion: 1, timerSeconds: 0, createdAt: nowIso() };
   await mutate((db) => {
     db.groups.push(group);
     db.groupMembers.push({ groupId: group.id, userId: req.user.id, role: 'admin', joinedAt: nowIso() });
@@ -347,9 +347,28 @@ app.post('/api/groups/:id/invite', auth, async (req, res) => {
   if (!canModerate(member.role)) return res.status(403).json({ error: 'Requiere admin o subadmin' });
   const code = nanoid(24);
   const link = inviteLink(code);
-  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, keyVersion: group.keyVersion || 1, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
   await mutate((db) => db.invitations.push(invitation));
   res.json({ invitation });
+});
+
+app.patch('/api/groups/:id/key-version', auth, async (req, res) => {
+  const member = groupMember(req.params.id, req.user.id);
+  if (!member || member.role !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const keyVersion = Number(req.body?.keyVersion || 0);
+  if (keyVersion <= (group.keyVersion || 1)) return res.status(400).json({ error: 'Version invalida' });
+  await mutate(() => {
+    group.keyVersion = keyVersion;
+    for (const invitation of state().invitations.filter((i) => i.type === 'group' && i.groupId === group.id && i.status === 'pending')) {
+      invitation.status = 'rotated';
+    }
+  });
+  sendToGroup(group.id, { type: 'group:key_rotated', groupId: group.id, keyVersion });
+  res.json({ group: groupPayload(group, req.user.id) });
 });
 
 app.patch('/api/conversations/:id/timer', auth, async (req, res) => {
@@ -504,7 +523,12 @@ app.get('/api/messages/:scope/:id', auth, (req, res) => {
     (scope === 'group' && state().groupMembers.some((m) => m.groupId === id && m.userId === req.user.id));
   if (!allowed) return res.status(403).json({ error: 'Sin acceso' });
   const messages = state().messages
-    .filter((m) => m.scope === scope && m.targetId === id && (!m.expiresAt || new Date(m.expiresAt).getTime() > Date.now()))
+    .filter((m) => {
+      if (m.scope !== scope || m.targetId !== id || (m.expiresAt && new Date(m.expiresAt).getTime() <= Date.now())) return false;
+      if (scope !== 'group') return true;
+      const member = groupMember(id, req.user.id);
+      return !member?.joinedAt || new Date(m.createdAt).getTime() >= new Date(member.joinedAt).getTime();
+    })
     .slice(-300)
     .map((m) => ({ ...m, sender: publicUser(state().users.find((u) => u.id === m.senderId)) }));
   res.json({ messages });

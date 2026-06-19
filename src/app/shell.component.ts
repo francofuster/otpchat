@@ -32,7 +32,7 @@ export class ShellComponent implements OnInit {
   contacts = signal<Contact[]>([]);
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
-  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string } | null>(null);
+  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
   sheet = signal<'contact' | 'group' | 'members' | 'admin' | null>(null);
@@ -65,7 +65,7 @@ export class ShellComponent implements OnInit {
       if (this.auth.user()) {
         const pendingInvite = this.pendingInvite();
         if (pendingInvite) {
-          await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key } } : undefined);
+          await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : undefined);
           return;
         }
         await this.load();
@@ -92,7 +92,7 @@ export class ShellComponent implements OnInit {
       this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
       const pendingInvite = this.pendingInvite();
       if (pendingInvite) {
-        await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key } } : undefined);
+        await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : undefined);
         return;
       }
       await this.load();
@@ -134,7 +134,7 @@ export class ShellComponent implements OnInit {
 
   async openGroup(group: Group) {
     const secret = this.secrets.get('group', group.id);
-    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId });
+    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || group.keyVersion || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId, joinedAt: group.joinedAt });
     await this.loadMessages();
     this.panel = 'chat';
   }
@@ -181,7 +181,7 @@ export class ShellComponent implements OnInit {
   async createInvite() {
     const secret = this.secrets.generate();
     const invitation = (await this.api.createContactInvite()).invitation;
-    invitation.link = this.secrets.attachToInviteLink(invitation.link, secret);
+    invitation.link = this.secrets.attachToInviteLink(invitation.link, secret, 1);
     invitation.qr = await this.secrets.qrFor(invitation.link);
     this.secrets.savePendingInvite(invitation.code, secret);
     this.invite.set(invitation);
@@ -211,7 +211,7 @@ export class ShellComponent implements OnInit {
       return;
     }
     const invitation = (await this.api.createGroupInvite(chat.id)).invitation;
-    invitation.link = this.secrets.attachToInviteLink(invitation.link, chat.secret);
+    invitation.link = this.secrets.attachToInviteLink(invitation.link, chat.secret, chat.keyVersion);
     invitation.qr = await this.secrets.qrFor(invitation.link);
     this.invite.set(invitation);
     this.sheet.set('group');
@@ -232,11 +232,16 @@ export class ShellComponent implements OnInit {
       this.api.toast('Falta la llave actual para renovar este chat.');
       return;
     }
+    if (chat.scope === 'group' && chat.role !== 'admin') {
+      this.api.toast('Solo el admin principal puede renovar la clave del grupo.');
+      return;
+    }
     const nextVersion = chat.keyVersion + 1;
     const nextSecret = this.secrets.generate();
     const control = JSON.stringify({ otpchatControl: 'key-rotation', version: nextVersion, secret: nextSecret });
     const encrypted = await this.crypto.encrypt(control, chat.secret, chat.keyVersion);
     const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
+    if (chat.scope === 'group') await this.api.updateGroupKeyVersion(chat.id, nextVersion);
     this.secrets.save(chat.scope, chat.id, nextSecret, nextVersion);
     this.selected.set({ ...chat, secret: nextSecret, keyVersion: nextVersion });
     const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text: 'Clave del chat renovada' };
@@ -475,7 +480,7 @@ export class ShellComponent implements OnInit {
     }
   }
 
-  private pendingInvite(): { code: string; key?: string } | null {
+  private pendingInvite(): { code: string; key?: string; keyVersion?: number } | null {
     const raw = localStorage.getItem('otpchat_pending_invite');
     if (!raw) return null;
     try {

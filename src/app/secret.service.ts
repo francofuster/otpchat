@@ -44,11 +44,12 @@ export class SecretService {
     return secret;
   }
 
-  attachToInviteLink(link: string, secret: string): string {
+  attachToInviteLink(link: string, secret: string, keyVersion = 1): string {
     const url = new URL(link, location.origin);
     const [path, query = ''] = url.hash.slice(1).split('?');
     const params = new URLSearchParams(query);
     params.set('key', secret);
+    params.set('kv', String(keyVersion));
     url.hash = `${path}?${params.toString()}`;
     return url.toString();
   }

@@ -44,6 +44,10 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ invitation: any }>(apiUrl(`/api/groups/${id}/invite`), {}));
   }
 
+  updateGroupKeyVersion(id: string, keyVersion: number) {
+    return firstValueFrom(this.http.patch(apiUrl(`/api/groups/${id}/key-version`), { keyVersion }));
+  }
+
   groupMembers(id: string) {
     return firstValueFrom(this.http.get<{ group: Group; members: GroupMember[] }>(apiUrl(`/api/groups/${id}/members`)));
   }

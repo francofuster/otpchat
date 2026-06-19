@@ -20,6 +20,8 @@ export interface Group {
   id: string;
   name: string;
   founderId: string;
+  keyVersion: number;
+  joinedAt?: string;
   timerSeconds: number;
   role: 'admin' | 'subadmin' | 'member';
 }

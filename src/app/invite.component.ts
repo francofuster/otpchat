@@ -46,6 +46,7 @@ export class InviteComponent implements OnInit {
   error = signal('');
   private code = '';
   private key = '';
+  private keyVersion = 1;
   private readonly pendingInviteKey = 'otpchat_pending_invite';
 
   constructor(public auth: AuthService, private api: ApiService, private secrets: SecretService, private route: ActivatedRoute, private router: Router) {}
@@ -53,11 +54,12 @@ export class InviteComponent implements OnInit {
   async ngOnInit() {
     this.code = this.route.snapshot.paramMap.get('code') || '';
     this.key = this.route.snapshot.queryParamMap.get('key') || '';
+    this.keyVersion = Number(this.route.snapshot.queryParamMap.get('kv') || 1);
     const wait = setInterval(async () => {
       if (!this.auth.ready()) return;
       clearInterval(wait);
       if (!this.auth.user()) {
-        localStorage.setItem(this.pendingInviteKey, JSON.stringify({ code: this.code, key: this.key }));
+        localStorage.setItem(this.pendingInviteKey, JSON.stringify({ code: this.code, key: this.key, keyVersion: this.keyVersion }));
         return;
       }
       try { this.invite.set(await this.api.getInvite(this.code)); }
@@ -71,8 +73,8 @@ export class InviteComponent implements OnInit {
       return;
     }
     const res = await this.api.acceptInvite(this.code);
-    if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key);
-    if (res.groupId) this.secrets.save('group', res.groupId, this.key);
+    if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key, this.keyVersion);
+    if (res.groupId) this.secrets.save('group', res.groupId, this.key, Number(res.keyVersion || this.keyVersion));
     localStorage.removeItem(this.pendingInviteKey);
     await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId } });
   }
