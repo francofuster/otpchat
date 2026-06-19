@@ -48,6 +48,11 @@ export class AuthService {
     this.user.set(res.user);
   }
 
+  async changeUsername(username: string) {
+    const res = await firstValueFrom(this.http.patch<{ user: User }>(apiUrl('/api/auth/username'), { username }));
+    this.user.set(res.user);
+  }
+
   async logout() {
     const refreshToken = localStorage.getItem('otpchat_refresh');
     try {

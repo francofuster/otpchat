@@ -23,9 +23,12 @@ export class ShellComponent implements OnInit {
   password = '';
   repeatPassword = '';
   newPassword = '';
+  accountUsername = '';
+  accountPassword = '';
   showPassword = false;
   showRepeatPassword = false;
   showNewPassword = false;
+  showAccountPassword = false;
   darkMode = signal(localStorage.getItem('otpchat_theme') === 'dark');
   authMode: 'login' | 'register' = 'login';
   authError = signal('');
@@ -35,7 +38,7 @@ export class ShellComponent implements OnInit {
   selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
-  sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | null>(null);
+  sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | 'settings' | null>(null);
   invite = signal<any>(null);
   groupName = '';
   badge = signal<Record<string, number>>({});
@@ -224,6 +227,13 @@ export class ShellComponent implements OnInit {
     this.sheet.set('actions');
   }
 
+  openSettings() {
+    this.invite.set(null);
+    this.accountUsername = this.auth.user()?.username || '';
+    this.accountPassword = '';
+    this.sheet.set('settings');
+  }
+
   async setTimer(seconds: string) {
     const chat = this.selected();
     if (!chat) return;
@@ -393,6 +403,30 @@ export class ShellComponent implements OnInit {
     this.darkMode.update((enabled) => !enabled);
     localStorage.setItem('otpchat_theme', this.darkMode() ? 'dark' : 'light');
     this.applyTheme();
+  }
+
+  async saveUsername() {
+    try {
+      await this.auth.changeUsername(this.accountUsername);
+      this.api.toast('Nombre de usuario actualizado');
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo cambiar el usuario');
+    }
+  }
+
+  async saveAccountPassword() {
+    const errors = this.passwordErrors(this.accountPassword);
+    if (errors.length) {
+      this.api.toast(`La contraseÃ±a debe tener ${errors.join(', ')}.`);
+      return;
+    }
+    try {
+      await this.auth.changePassword(this.accountPassword);
+      this.accountPassword = '';
+      this.api.toast('ContraseÃ±a actualizada');
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseÃ±a');
+    }
   }
 
   passwordErrors(password: string) {

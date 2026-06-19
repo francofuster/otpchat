@@ -249,6 +249,19 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
 
 app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user) }));
 
+app.patch('/api/auth/username', auth, async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  if (username.length < 3) return res.status(400).json({ error: 'El usuario debe tener al menos 3 caracteres' });
+  if (username.length > 32) return res.status(400).json({ error: 'El usuario no puede superar 32 caracteres' });
+  if (!/^[A-Za-z0-9_.-]+$/.test(username)) return res.status(400).json({ error: 'Usa solo letras, numeros, punto, guion o guion bajo' });
+  const taken = state().users.some((u) => u.id !== req.user.id && u.username.toLowerCase() === username.toLowerCase());
+  if (taken) return res.status(409).json({ error: 'Ese usuario ya existe' });
+  await mutate(() => {
+    req.user.username = username;
+  });
+  res.json({ user: publicUser(req.user) });
+});
+
 app.get('/api/bootstrap', auth, (req, res) => {
   const contacts = state().contacts
     .filter((c) => c.userIds.includes(req.user.id))
