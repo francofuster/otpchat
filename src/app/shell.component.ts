@@ -5,6 +5,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { ApiService } from './api.service';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
+import { SecretService } from './secret.service';
 import { ChatMessage, Contact, Group } from './types';
 
 const timers = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
@@ -31,13 +32,12 @@ export class ShellComponent implements OnInit {
   contacts = signal<Contact[]>([]);
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
-  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; timerSeconds: number; role?: string } | null>(null);
+  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
   sheet = signal<'contact' | 'group' | 'admin' | null>(null);
   invite = signal<any>(null);
   groupName = '';
-  groupSecret = '';
   badge = signal<Record<string, number>>({});
   adminStats = signal<any>(null);
   adminUsers = signal<any[]>([]);
@@ -50,6 +50,7 @@ export class ShellComponent implements OnInit {
     public auth: AuthService,
     public crypto: CryptoService,
     public api: ApiService,
+    private secrets: SecretService,
     private route: ActivatedRoute,
     private router: Router
   ) {}
@@ -60,9 +61,9 @@ export class ShellComponent implements OnInit {
       if (!this.auth.ready()) return;
       clearInterval(boot);
       if (this.auth.user()) {
-        const pendingInvite = localStorage.getItem('otpchat_pending_invite');
+        const pendingInvite = this.pendingInvite();
         if (pendingInvite) {
-          await this.router.navigate(['/invite', pendingInvite]);
+          await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key } } : undefined);
           return;
         }
         await this.load();
@@ -87,9 +88,9 @@ export class ShellComponent implements OnInit {
     }
     try {
       this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
-      const pendingInvite = localStorage.getItem('otpchat_pending_invite');
+      const pendingInvite = this.pendingInvite();
       if (pendingInvite) {
-        await this.router.navigate(['/invite', pendingInvite]);
+        await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key } } : undefined);
         return;
       }
       await this.load();
@@ -123,13 +124,15 @@ export class ShellComponent implements OnInit {
   }
 
   async openContact(contact: Contact) {
-    this.selected.set({ scope: 'contact', id: contact.conversationId, title: contact.other.username, secret: contact.conversationId, timerSeconds: contact.timerSeconds });
+    const secret = this.secrets.get('contact', contact.conversationId);
+    this.selected.set({ scope: 'contact', id: contact.conversationId, title: contact.other.username, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: contact.timerSeconds });
     await this.loadMessages();
     this.panel = 'chat';
   }
 
   async openGroup(group: Group) {
-    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: group.secret, timerSeconds: group.timerSeconds, role: group.role });
+    const secret = this.secrets.get('group', group.id);
+    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: group.timerSeconds, role: group.role });
     await this.loadMessages();
     this.panel = 'chat';
   }
@@ -138,7 +141,12 @@ export class ShellComponent implements OnInit {
     const chat = this.selected();
     if (!chat) return;
     const res = await this.api.messages(chat.scope, chat.id);
-    const decrypted = await Promise.all(res.messages.map(async (m) => ({ ...m, text: await this.crypto.decrypt(m.encrypted, chat.secret) })));
+    const decrypted: ChatMessage[] = [];
+    for (const m of res.messages) {
+      const secret = this.secrets.getVersion(chat.scope, chat.id, m.encrypted.keyVersion || 1) || chat.secret;
+      const text = secret ? await this.crypto.decrypt(m.encrypted, secret) : '[Falta la llave local para descifrar]';
+      decrypted.push({ ...m, text: this.applyKeyRotation(chat.scope, chat.id, text) });
+    }
     this.messages.set(decrypted);
     this.badge.update((b) => ({ ...b, [chat.id]: 0 }));
     setTimeout(() => this.scrollBottom(), 40);
@@ -147,9 +155,13 @@ export class ShellComponent implements OnInit {
   async send() {
     const chat = this.selected();
     if (!chat || !this.draft.trim()) return;
+    if (!chat.secret) {
+      this.api.toast('Falta la llave local de este chat. Necesitas una nueva invitacion segura.');
+      return;
+    }
     const text = this.draft.trim();
     this.draft = '';
-    const encrypted = await this.crypto.encrypt(text, chat.secret);
+    const encrypted = await this.crypto.encrypt(text, chat.secret, chat.keyVersion);
     const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
     const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text };
     this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
@@ -165,7 +177,12 @@ export class ShellComponent implements OnInit {
   }
 
   async createInvite() {
-    this.invite.set((await this.api.createContactInvite()).invitation);
+    const secret = this.secrets.generate();
+    const invitation = (await this.api.createContactInvite()).invitation;
+    invitation.link = this.secrets.attachToInviteLink(invitation.link, secret);
+    invitation.qr = await this.secrets.qrFor(invitation.link);
+    this.secrets.savePendingInvite(invitation.code, secret);
+    this.invite.set(invitation);
     this.sheet.set('contact');
   }
 
@@ -175,24 +192,26 @@ export class ShellComponent implements OnInit {
   }
 
   async createGroup() {
+    const secret = this.secrets.generate();
     const { group } = await this.api.createGroup(this.groupName || 'Grupo OTP');
+    this.secrets.save('group', group.id, secret);
     this.groupName = '';
     await this.load();
     await this.openGroup({ ...group, role: 'admin' });
     this.sheet.set(null);
   }
 
-  async joinGroup() {
-    await this.api.joinGroup(this.groupSecret);
-    this.groupSecret = '';
-    await this.load();
-    this.sheet.set(null);
-  }
-
   async groupInvite() {
     const chat = this.selected();
     if (chat?.scope !== 'group' || chat.role !== 'admin') return;
-    this.invite.set((await this.api.createGroupInvite(chat.id)).invitation);
+    if (!chat.secret) {
+      this.api.toast('Falta la llave local del grupo en este dispositivo.');
+      return;
+    }
+    const invitation = (await this.api.createGroupInvite(chat.id)).invitation;
+    invitation.link = this.secrets.attachToInviteLink(invitation.link, chat.secret);
+    invitation.qr = await this.secrets.qrFor(invitation.link);
+    this.invite.set(invitation);
     this.sheet.set('group');
   }
 
@@ -203,6 +222,25 @@ export class ShellComponent implements OnInit {
     chat.timerSeconds = timerSeconds;
     this.selected.set({ ...chat });
     chat.scope === 'group' ? await this.api.updateGroupTimer(chat.id, timerSeconds) : await this.api.updateContactTimer(chat.id, timerSeconds);
+  }
+
+  async rotateSecret() {
+    const chat = this.selected();
+    if (!chat?.secret) {
+      this.api.toast('Falta la llave actual para renovar este chat.');
+      return;
+    }
+    const nextVersion = chat.keyVersion + 1;
+    const nextSecret = this.secrets.generate();
+    const control = JSON.stringify({ otpchatControl: 'key-rotation', version: nextVersion, secret: nextSecret });
+    const encrypted = await this.crypto.encrypt(control, chat.secret, chat.keyVersion);
+    const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
+    this.secrets.save(chat.scope, chat.id, nextSecret, nextVersion);
+    this.selected.set({ ...chat, secret: nextSecret, keyVersion: nextVersion });
+    const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text: 'Clave del chat renovada' };
+    this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
+    this.api.toast('Clave renovada para futuros mensajes');
+    setTimeout(() => this.scrollBottom(), 40);
   }
 
   async openAdmin() {
@@ -289,6 +327,8 @@ export class ShellComponent implements OnInit {
       await this.load();
       const contact = this.contacts().find((item) => item.conversationId === event.conversationId);
       if (contact) {
+        const secret = this.secrets.consumePendingInvite(event.code);
+        if (secret) this.secrets.save('contact', event.conversationId, secret);
         this.sheet.set(null);
         this.invite.set(null);
         await this.openContact(contact);
@@ -300,7 +340,9 @@ export class ShellComponent implements OnInit {
     if (event.type === 'message:new') {
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
-        event.message.text = await this.crypto.decrypt(event.message.encrypted, chat.secret);
+        const secret = this.secrets.getVersion(chat.scope, chat.id, event.message.encrypted.keyVersion || 1) || chat.secret;
+        const text = secret ? await this.crypto.decrypt(event.message.encrypted, secret) : '[Falta la llave local para descifrar]';
+        event.message.text = this.applyKeyRotation(chat.scope, chat.id, text);
         this.messages.update((items) => items.some((item) => item.id === event.message.id) ? items : [...items, event.message]);
         setTimeout(() => this.scrollBottom(), 40);
       } else {
@@ -320,5 +362,31 @@ export class ShellComponent implements OnInit {
   private scrollBottom() {
     const box = this.scrollbox?.nativeElement;
     if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string): string {
+    try {
+      const control = JSON.parse(text);
+      if (control?.otpchatControl !== 'key-rotation' || !control.secret || !control.version) return text;
+      this.secrets.save(scope, id, control.secret, Number(control.version));
+      const chat = this.selected();
+      if (chat?.scope === scope && chat.id === id && Number(control.version) > chat.keyVersion) {
+        this.selected.set({ ...chat, secret: control.secret, keyVersion: Number(control.version) });
+      }
+      return 'Clave del chat renovada';
+    } catch {
+      return text;
+    }
+  }
+
+  private pendingInvite(): { code: string; key?: string } | null {
+    const raw = localStorage.getItem('otpchat_pending_invite');
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed?.code ? parsed : { code: raw };
+    } catch {
+      return { code: raw };
+    }
   }
 }

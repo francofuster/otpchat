@@ -54,7 +54,6 @@ export const InvitationEntity = new EntitySchema({
     status: { type: 'varchar' },
     createdAt: { type: 'text' },
     expiresAt: { type: 'text' },
-    qr: { type: 'text', nullable: true },
     link: { type: 'text' }
   }
 });
@@ -65,7 +64,6 @@ export const GroupEntity = new EntitySchema({
   columns: {
     id: { type: 'varchar', primary: true },
     name: { type: 'varchar' },
-    secret: { type: 'text', unique: true },
     founderId: { type: 'varchar' },
     timerSeconds: { type: 'integer', default: 0 },
     createdAt: { type: 'text' }

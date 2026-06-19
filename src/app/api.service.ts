@@ -40,10 +40,6 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ group: Group }>(apiUrl('/api/groups'), { name }));
   }
 
-  joinGroup(secret: string) {
-    return firstValueFrom(this.http.post<{ group: Group }>(apiUrl('/api/groups/join'), { secret }));
-  }
-
   createGroupInvite(id: string) {
     return firstValueFrom(this.http.post<{ invitation: any }>(apiUrl(`/api/groups/${id}/invite`), {}));
   }

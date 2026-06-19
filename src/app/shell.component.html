@@ -144,6 +144,7 @@
             <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes">
               @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
             </select>
+            <button title="Renovar clave" (click)="rotateSecret()"><svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg></button>
             @if (chat.scope === 'group' && chat.role === 'admin') { <button title="QR del grupo" (click)="groupInvite()"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v6h-6v-2h4zM14 18h2v2h-2z"/></svg></button> }
           </div>
         </header>
@@ -195,9 +196,7 @@
         <h2>Crear grupo</h2>
         <input [(ngModel)]="groupName" placeholder="Nombre del grupo">
         <button class="primary" (click)="createGroup()">Crear</button>
-        <h2>Unirse con secreto OTP</h2>
-        <input [(ngModel)]="groupSecret" placeholder="Secreto del grupo">
-        <button (click)="joinGroup()">Unirme</button>
+        <p>Para unirse a un grupo, usa un link o QR generado por un admin.</p>
       }
     }
     @if (openSheet === 'admin') {

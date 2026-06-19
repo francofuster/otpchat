@@ -19,7 +19,6 @@ export interface Contact {
 export interface Group {
   id: string;
   name: string;
-  secret: string;
   founderId: string;
   timerSeconds: number;
   role: 'admin' | 'member';
@@ -43,4 +42,5 @@ export interface EncryptedPayload {
   salt: string;
   ciphertext: string;
   keyStep?: number;
+  keyVersion?: number;
 }

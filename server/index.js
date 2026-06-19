@@ -8,7 +8,6 @@ import jwt from 'jsonwebtoken';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
-import QRCode from 'qrcode';
 import { nanoid } from 'nanoid';
 import {
   conversationIdForUsers,
@@ -245,7 +244,6 @@ app.get('/api/bootstrap', auth, (req, res) => {
 app.post('/api/invitations/contact', auth, async (req, res) => {
   const code = nanoid(24);
   const link = inviteLink(code);
-  const qr = await QRCode.toDataURL(link, { margin: 1, width: 320 });
   const invitation = {
     id: makeId('inv'),
     type: 'contact',
@@ -254,7 +252,6 @@ app.post('/api/invitations/contact', auth, async (req, res) => {
     status: 'pending',
     createdAt: nowIso(),
     expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
-    qr,
     link
   };
   await mutate((db) => db.invitations.push(invitation));
@@ -268,7 +265,7 @@ app.get('/api/invitations/:code', auth, (req, res) => {
   }
   const inviter = publicUser(state().users.find((u) => u.id === invitation.inviterId));
   const group = invitation.groupId ? state().groups.find((g) => g.id === invitation.groupId) : null;
-  res.json({ invitation: { ...invitation, qr: undefined }, inviter, group });
+  res.json({ invitation, inviter, group });
 });
 
 app.post('/api/invitations/:code/cancel', auth, async (req, res) => {
@@ -299,7 +296,7 @@ app.post('/api/invitations/:code/accept', auth, async (req, res) => {
   }
   invitation.status = 'accepted';
   await mutate(() => {});
-  sendToConversation(conversationId, { type: 'contact:accepted', conversationId, contact });
+  sendToConversation(conversationId, { type: 'contact:accepted', conversationId, code: invitation.code, contact });
   res.json({ conversationId, contact });
 });
 
@@ -313,8 +310,7 @@ app.post('/api/invitations/:code/reject', auth, async (req, res) => {
 
 app.post('/api/groups', auth, async (req, res) => {
   const { name } = req.body || {};
-  const secret = randomBytes(20).toString('base64url');
-  const group = { id: makeId('grp'), name: name || 'Grupo OTP', secret, founderId: req.user.id, timerSeconds: 0, createdAt: nowIso() };
+  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, timerSeconds: 0, createdAt: nowIso() };
   await mutate((db) => {
     db.groups.push(group);
     db.groupMembers.push({ groupId: group.id, userId: req.user.id, role: 'admin', joinedAt: nowIso() });
@@ -323,12 +319,7 @@ app.post('/api/groups', auth, async (req, res) => {
 });
 
 app.post('/api/groups/join', auth, async (req, res) => {
-  const group = state().groups.find((g) => g.secret === req.body?.secret);
-  if (!group) return res.status(404).json({ error: 'Secreto inválido' });
-  const exists = state().groupMembers.some((m) => m.groupId === group.id && m.userId === req.user.id);
-  if (!exists) await mutate((db) => db.groupMembers.push({ groupId: group.id, userId: req.user.id, role: 'member', joinedAt: nowIso() }));
-  sendToGroup(group.id, { type: 'group:member_joined', groupId: group.id, user: publicUser(req.user) });
-  res.json({ group });
+  return res.status(410).json({ error: 'Unite con un link o QR de invitacion' });
 });
 
 app.post('/api/groups/:id/invite', auth, async (req, res) => {
@@ -337,8 +328,7 @@ app.post('/api/groups/:id/invite', auth, async (req, res) => {
   if (member.role !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
   const code = nanoid(24);
   const link = inviteLink(code);
-  const qr = await QRCode.toDataURL(link, { margin: 1, width: 320 });
-  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), qr, link };
+  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
   await mutate((db) => db.invitations.push(invitation));
   res.json({ invitation });
 });

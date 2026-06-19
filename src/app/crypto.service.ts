@@ -39,7 +39,7 @@ export class CryptoService {
     return fp;
   }
 
-  async encrypt(text: string, secret: string): Promise<EncryptedPayload> {
+  async encrypt(text: string, secret: string, keyVersion = 1): Promise<EncryptedPayload> {
     const subtle = subtleCrypto();
     if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -47,7 +47,7 @@ export class CryptoService {
     const keyStep = this.currentStep();
     const key = await this.deriveKey(await this.sharedSecret(secret, keyStep), salt);
     const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text));
-    return { iv: this.b64(iv), salt: this.b64(salt), ciphertext: this.b64(new Uint8Array(ciphertext)), keyStep };
+    return { iv: this.b64(iv), salt: this.b64(salt), ciphertext: this.b64(new Uint8Array(ciphertext)), keyStep, keyVersion };
   }
 
   async decrypt(payload: EncryptedPayload, secret: string): Promise<string> {

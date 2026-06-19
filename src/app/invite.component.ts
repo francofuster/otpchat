@@ -2,6 +2,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { AuthService } from './auth.service';
 import { ApiService } from './api.service';
+import { SecretService } from './secret.service';
 
 @Component({
   selector: 'app-invite',
@@ -44,17 +45,19 @@ export class InviteComponent implements OnInit {
   invite = signal<any>(null);
   error = signal('');
   private code = '';
+  private key = '';
   private readonly pendingInviteKey = 'otpchat_pending_invite';
 
-  constructor(public auth: AuthService, private api: ApiService, private route: ActivatedRoute, private router: Router) {}
+  constructor(public auth: AuthService, private api: ApiService, private secrets: SecretService, private route: ActivatedRoute, private router: Router) {}
 
   async ngOnInit() {
     this.code = this.route.snapshot.paramMap.get('code') || '';
+    this.key = this.route.snapshot.queryParamMap.get('key') || '';
     const wait = setInterval(async () => {
       if (!this.auth.ready()) return;
       clearInterval(wait);
       if (!this.auth.user()) {
-        localStorage.setItem(this.pendingInviteKey, this.code);
+        localStorage.setItem(this.pendingInviteKey, JSON.stringify({ code: this.code, key: this.key }));
         return;
       }
       try { this.invite.set(await this.api.getInvite(this.code)); }
@@ -63,7 +66,13 @@ export class InviteComponent implements OnInit {
   }
 
   async accept() {
+    if (!this.key) {
+      this.error.set('Esta invitacion no trae llave de cifrado. Pide que te envien un nuevo link o QR.');
+      return;
+    }
     const res = await this.api.acceptInvite(this.code);
+    if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key);
+    if (res.groupId) this.secrets.save('group', res.groupId, this.key);
     localStorage.removeItem(this.pendingInviteKey);
     await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId } });
   }
