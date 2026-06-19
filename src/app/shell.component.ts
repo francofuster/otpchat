@@ -65,7 +65,7 @@ export class ShellComponent implements OnInit {
       if (this.auth.user()) {
         const pendingInvite = this.pendingInvite();
         if (pendingInvite) {
-          await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : undefined);
+          await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
           return;
         }
         await this.load();
@@ -92,7 +92,7 @@ export class ShellComponent implements OnInit {
       this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
       const pendingInvite = this.pendingInvite();
       if (pendingInvite) {
-        await this.router.navigate(['/invite', pendingInvite.code], pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : undefined);
+        await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
         return;
       }
       await this.load();

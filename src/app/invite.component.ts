@@ -10,11 +10,11 @@ import { SecretService } from './secret.service';
   template: `
     <main class="invite">
       @if (!auth.ready()) {
-        <section class="box">Cargando invitación...</section>
+        <section class="box">Cargando invitacion...</section>
       } @else if (!auth.user()) {
         <section class="box">
-          <h1>Entrá para aceptar</h1>
-          <p>Iniciá sesión o registrate. Después volvés automáticamente a esta invitación.</p>
+          <h1>Entra para aceptar</h1>
+          <p>Inicia sesion o registrate. Despues volves automaticamente a esta invitacion.</p>
           <a href="/#/">Ir a OTPChat</a>
         </section>
       } @else if (invite()) {
@@ -27,17 +27,17 @@ import { SecretService } from './secret.service';
           </div>
         </section>
       } @else {
-        <section class="box">{{ error() || 'Buscando invitación...' }}</section>
+        <section class="box">{{ error() || 'Buscando invitacion...' }}</section>
       }
     </main>
   `,
   styles: [`
     .invite { min-height: 100dvh; display: grid; place-items: center; padding: 20px; }
-    .box { width: min(440px, 100%); background: white; border: 1px solid var(--line); border-radius: 8px; padding: 24px; box-shadow: 0 20px 60px #1232; }
+    .box { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; box-shadow: 0 20px 60px var(--shadow); }
     h1 { margin: 0 0 10px; }
     p { color: var(--muted); }
     .actions { display: flex; gap: 10px; }
-    button, a { border-radius: 8px; padding: 11px 14px; background: #e9eef7; color: var(--ink); text-decoration: none; }
+    button, a { border-radius: 8px; padding: 11px 14px; background: color-mix(in srgb, var(--panel) 78%, var(--blue) 22%); color: var(--ink); text-decoration: none; }
     .primary { background: var(--blue); color: white; }
   `]
 })
@@ -49,7 +49,13 @@ export class InviteComponent implements OnInit {
   private keyVersion = 1;
   private readonly pendingInviteKey = 'otpchat_pending_invite';
 
-  constructor(public auth: AuthService, private api: ApiService, private secrets: SecretService, private route: ActivatedRoute, private router: Router) {}
+  constructor(
+    public auth: AuthService,
+    private api: ApiService,
+    private secrets: SecretService,
+    private route: ActivatedRoute,
+    private router: Router
+  ) {}
 
   async ngOnInit() {
     this.code = this.route.snapshot.paramMap.get('code') || '';
@@ -62,8 +68,12 @@ export class InviteComponent implements OnInit {
         localStorage.setItem(this.pendingInviteKey, JSON.stringify({ code: this.code, key: this.key, keyVersion: this.keyVersion }));
         return;
       }
-      try { this.invite.set(await this.api.getInvite(this.code)); }
-      catch { this.error.set('La invitación venció, fue cancelada o no existe.'); }
+      try {
+        this.invite.set(await this.api.getInvite(this.code));
+      } catch {
+        this.error.set('La invitacion vencio, fue cancelada o no existe.');
+        setTimeout(() => void this.router.navigate(['/'], { replaceUrl: true }), 1200);
+      }
     }, 100);
   }
 
@@ -76,12 +86,14 @@ export class InviteComponent implements OnInit {
     if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key, this.keyVersion);
     if (res.groupId) this.secrets.save('group', res.groupId, this.key, Number(res.keyVersion || this.keyVersion));
     localStorage.removeItem(this.pendingInviteKey);
-    await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId } });
+    history.replaceState(null, '', '/#/');
+    await this.router.navigate(['/'], { queryParams: { open: res.conversationId || res.groupId }, replaceUrl: true });
   }
 
   async reject() {
     await this.api.rejectInvite(this.code);
     localStorage.removeItem(this.pendingInviteKey);
-    await this.router.navigate(['/']);
+    history.replaceState(null, '', '/#/');
+    await this.router.navigate(['/'], { replaceUrl: true });
   }
 }
