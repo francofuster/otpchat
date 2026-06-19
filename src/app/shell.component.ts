@@ -35,7 +35,7 @@ export class ShellComponent implements OnInit {
   selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
-  sheet = signal<'contact' | 'group' | 'members' | 'admin' | null>(null);
+  sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | null>(null);
   invite = signal<any>(null);
   groupName = '';
   badge = signal<Record<string, number>>({});
@@ -216,6 +216,12 @@ export class ShellComponent implements OnInit {
     invitation.qr = await this.secrets.qrFor(invitation.link);
     this.invite.set(invitation);
     this.sheet.set('group');
+  }
+
+  openActions() {
+    if (!this.selected()) return;
+    this.invite.set(null);
+    this.sheet.set('actions');
   }
 
   async setTimer(seconds: string) {
