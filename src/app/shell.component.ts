@@ -36,6 +36,7 @@ export class ShellComponent implements OnInit {
   darkMode = signal(localStorage.getItem('otpchat_theme') === 'dark');
   authMode: 'login' | 'register' = 'login';
   authError = signal('');
+  authSubmitting = signal(false);
   contacts = signal<Contact[]>([]);
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
@@ -45,6 +46,7 @@ export class ShellComponent implements OnInit {
   sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | 'settings' | null>(null);
   invite = signal<any>(null);
   groupName = '';
+  groupCreating = signal(false);
   badge = signal<Record<string, number>>({});
   adminStats = signal<any>(null);
   adminUsers = signal<any[]>([]);
@@ -91,6 +93,7 @@ export class ShellComponent implements OnInit {
   }
 
   async login() {
+    if (this.authSubmitting()) return;
     this.authError.set('');
     if (this.authMode === 'register') {
       const errors = this.passwordErrors(this.password);
@@ -103,6 +106,7 @@ export class ShellComponent implements OnInit {
         return;
       }
     }
+    this.authSubmitting.set(true);
     try {
       this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
       const pendingInvite = this.pendingInvite();
@@ -114,6 +118,8 @@ export class ShellComponent implements OnInit {
     } catch (err: any) {
       const blocked = err.error?.blockedUntil ? ` Disponible ${this.countdown(err.error.blockedUntil)}` : '';
       this.authError.set((err.error?.error || err.message || 'No se pudo entrar') + blocked);
+    } finally {
+      this.authSubmitting.set(false);
     }
   }
 
@@ -211,13 +217,21 @@ export class ShellComponent implements OnInit {
   }
 
   async createGroup() {
+    if (this.groupCreating()) return;
+    this.groupCreating.set(true);
     const secret = this.secrets.generate();
-    const { group } = await this.api.createGroup(this.groupName || 'Grupo OTP');
-    this.secrets.save('group', group.id, secret);
-    this.groupName = '';
-    await this.load();
-    await this.openGroup({ ...group, role: 'admin' });
-    this.sheet.set(null);
+    try {
+      const { group } = await this.api.createGroup(this.groupName || 'Grupo OTP');
+      this.secrets.save('group', group.id, secret);
+      this.groupName = '';
+      await this.load();
+      await this.openGroup({ ...group, role: 'admin' });
+      this.sheet.set(null);
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo crear el grupo');
+    } finally {
+      this.groupCreating.set(false);
+    }
   }
 
   async groupInvite() {

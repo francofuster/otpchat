@@ -6,7 +6,17 @@
 .auth p, .empty { color: var(--muted); margin: 0 0 6px; }
 input, textarea, select { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; background: var(--panel); color: var(--ink); }
 button { border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--panel) 78%, var(--blue) 22%); color: var(--ink); display: inline-grid; place-items: center; }
+button:disabled, input:disabled { opacity: .72; cursor: wait; }
 .primary, .send { background: var(--blue); color: white; }
+.loading-button { min-height: 42px; }
+.loading-dots { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 48px; }
+.loading-dots i { width: 7px; height: 7px; border-radius: 999px; background: currentColor; animation: loading-bounce .7s ease-in-out infinite; }
+.loading-dots i:nth-child(2) { animation-delay: .12s; }
+.loading-dots i:nth-child(3) { animation-delay: .24s; }
+@keyframes loading-bounce {
+  0%, 80%, 100% { transform: translateY(3px); opacity: .55; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
 .link { background: transparent; color: var(--blue); }
 .error { color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, transparent); padding: 10px; border-radius: 8px; }
 .mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: color-mix(in srgb, var(--panel) 70%, var(--line)); padding: 4px; border-radius: 8px; }
