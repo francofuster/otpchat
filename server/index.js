@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import webpush from 'web-push';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
@@ -30,6 +31,13 @@ const superadminName = 'sup3r4drm1n_3533';
 const online = new Map();
 const registerCooldownEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.REGISTER_COOLDOWN_ENABLED || '').toLowerCase());
 const deviceAccountLimitEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.DEVICE_ACCOUNT_LIMIT_ENABLED || '').toLowerCase());
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
+const vapidSubject = process.env.VAPID_SUBJECT || `mailto:admin@${new URL(clientOrigin).hostname}`;
+
+if (vapidPublicKey && vapidPrivateKey) {
+  webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+}
 
 function inviteLink(code) {
   return `${clientOrigin.replace(/\/$/, '')}/#/invite/${code}`;
@@ -110,6 +118,25 @@ function sendToConversation(conversationId, event) {
 function sendToGroup(groupId, event) {
   const members = state().groupMembers.filter((m) => m.groupId === groupId);
   for (const member of members) sendToUser(member.userId, event);
+}
+
+async function sendPushToUsers(userIds) {
+  if (!vapidPublicKey || !vapidPrivateKey || !userIds.length) return;
+  const ids = new Set(userIds);
+  const subscriptions = state().pushSubscriptions.filter((item) => ids.has(item.userId));
+  const staleEndpoints = [];
+  await Promise.all(subscriptions.map(async (item) => {
+    try {
+      await webpush.sendNotification(item.subscription, JSON.stringify({ title: 'Mensajes nuevos' }));
+    } catch (err) {
+      if ([404, 410].includes(err?.statusCode)) staleEndpoints.push(item.endpoint);
+    }
+  }));
+  if (staleEndpoints.length) {
+    await mutate((db) => {
+      db.pushSubscriptions = db.pushSubscriptions.filter((item) => !staleEndpoints.includes(item.endpoint));
+    });
+  }
 }
 
 function groupMember(groupId, userId) {
@@ -248,6 +275,42 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
 });
 
 app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user) }));
+
+app.get('/api/push/public-key', auth, (req, res) => {
+  res.json({ publicKey: vapidPublicKey });
+});
+
+app.post('/api/push/subscribe', auth, async (req, res) => {
+  const subscription = req.body?.subscription;
+  if (!vapidPublicKey || !vapidPrivateKey) return res.status(503).json({ error: 'Push no configurado' });
+  if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) return res.status(400).json({ error: 'Suscripcion invalida' });
+  await mutate((db) => {
+    const existing = db.pushSubscriptions.find((item) => item.endpoint === subscription.endpoint);
+    if (existing) {
+      existing.userId = req.user.id;
+      existing.subscription = subscription;
+      existing.updatedAt = nowIso();
+      return;
+    }
+    db.pushSubscriptions.push({
+      id: makeId('push'),
+      userId: req.user.id,
+      endpoint: subscription.endpoint,
+      subscription,
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    });
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', auth, async (req, res) => {
+  const endpoint = req.body?.endpoint;
+  await mutate((db) => {
+    db.pushSubscriptions = db.pushSubscriptions.filter((item) => item.userId !== req.user.id || (endpoint && item.endpoint !== endpoint));
+  });
+  res.json({ ok: true });
+});
 
 app.patch('/api/auth/username', auth, async (req, res) => {
   const username = String(req.body?.username || '').trim();
@@ -576,8 +639,12 @@ app.post('/api/messages', auth, async (req, res) => {
   };
   await mutate((db) => db.messages.push(message));
   const event = { type: 'message:new', message: { ...message, sender: publicUser(req.user) } };
+  const recipientIds = scope === 'group'
+    ? state().groupMembers.filter((m) => m.groupId === targetId && m.userId !== req.user.id).map((m) => m.userId)
+    : targetId.split(':').filter((id) => id !== req.user.id);
   if (scope === 'group') sendToGroup(targetId, event);
   else sendToConversation(targetId, event);
+  void sendPushToUsers(recipientIds);
   res.json({ message });
 });
 

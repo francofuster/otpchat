@@ -31,6 +31,7 @@ export class ShellComponent implements OnInit {
   showAccountPassword = false;
   notificationsEnabled = signal(localStorage.getItem('otpchat_notifications') === 'on');
   notificationPermission = signal(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
+  pushSubscribed = signal(localStorage.getItem('otpchat_push_subscribed') === 'on');
   deferredInstallPrompt = signal<any>(null);
   standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
   darkMode = signal(localStorage.getItem('otpchat_theme') === 'dark');
@@ -457,13 +458,15 @@ export class ShellComponent implements OnInit {
   }
 
   async toggleNotifications() {
-    if (typeof Notification === 'undefined' || !window.isSecureContext) {
-      this.api.toast('Las notificaciones requieren HTTPS o localhost.');
+    if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window) || !window.isSecureContext) {
+      this.api.toast('Las notificaciones push requieren HTTPS y un navegador compatible.');
       return;
     }
     if (this.notificationsEnabled()) {
+      await this.disablePushNotifications();
       localStorage.setItem('otpchat_notifications', 'off');
       this.notificationsEnabled.set(false);
+      this.pushSubscribed.set(false);
       this.api.toast('Notificaciones desactivadas');
       return;
     }
@@ -473,9 +476,16 @@ export class ShellComponent implements OnInit {
       this.api.toast('Permiso de notificaciones denegado');
       return;
     }
-    localStorage.setItem('otpchat_notifications', 'on');
-    this.notificationsEnabled.set(true);
-    this.api.toast('Notificaciones activadas');
+    try {
+      await this.enablePushNotifications();
+      localStorage.setItem('otpchat_notifications', 'on');
+      localStorage.setItem('otpchat_push_subscribed', 'on');
+      this.notificationsEnabled.set(true);
+      this.pushSubscribed.set(true);
+      this.api.toast('Notificaciones activadas');
+    } catch (err: any) {
+      this.api.toast(err.error?.error || err.message || 'No se pudo activar push');
+    }
   }
 
   async installApp() {
@@ -540,7 +550,7 @@ export class ShellComponent implements OnInit {
     if (event.type?.startsWith('group:')) await this.load();
     if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
     if (event.type === 'message:new') {
-      if (event.message.senderId !== this.auth.user()?.id) void this.notifyNewMessage();
+      if (event.message.senderId !== this.auth.user()?.id && !('PushManager' in window)) void this.notifyNewMessage();
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
         const secret = this.secrets.getVersion(chat.scope, chat.id, event.message.encrypted.keyVersion || 1) || chat.secret;
@@ -579,6 +589,33 @@ export class ShellComponent implements OnInit {
       }
     } catch {}
     new Notification('Mensajes nuevos', options);
+  }
+
+  private async enablePushNotifications() {
+    const { publicKey } = await this.api.pushPublicKey();
+    if (!publicKey) throw new Error('Push no configurado en el servidor');
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: this.urlBase64ToUint8Array(publicKey)
+    });
+    await this.api.subscribePush(subscription.toJSON());
+  }
+
+  private async disablePushNotifications() {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    await this.api.unsubscribePush(subscription?.endpoint);
+    if (subscription) await subscription.unsubscribe();
+    localStorage.setItem('otpchat_push_subscribed', 'off');
+  }
+
+  private urlBase64ToUint8Array(value: string) {
+    const padding = '='.repeat((4 - value.length % 4) % 4);
+    const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
   }
 
   private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string): string {

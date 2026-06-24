@@ -92,6 +92,18 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ message: ChatMessage }>(apiUrl('/api/messages'), { scope, targetId, encrypted }));
   }
 
+  pushPublicKey() {
+    return firstValueFrom(this.http.get<{ publicKey: string }>(apiUrl('/api/push/public-key')));
+  }
+
+  subscribePush(subscription: PushSubscriptionJSON) {
+    return firstValueFrom(this.http.post(apiUrl('/api/push/subscribe'), { subscription }));
+  }
+
+  unsubscribePush(endpoint?: string) {
+    return firstValueFrom(this.http.post(apiUrl('/api/push/unsubscribe'), { endpoint }));
+  }
+
   adminStats() {
     return firstValueFrom(this.http.get<any>(apiUrl('/api/admin/stats')));
   }

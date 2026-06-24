@@ -126,6 +126,20 @@ export const SecurityEventEntity = new EntitySchema({
   }
 });
 
+export const PushSubscriptionEntity = new EntitySchema({
+  name: 'PushSubscription',
+  tableName: 'push_subscriptions',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    userId: { type: 'varchar' },
+    endpoint: { type: 'text', unique: true },
+    subscription: { type: 'jsonb' },
+    createdAt: { type: 'text' },
+    updatedAt: { type: 'text' }
+  },
+  indices: [{ name: 'idx_push_subscriptions_user', columns: ['userId'] }]
+});
+
 export const entities = [
   UserEntity,
   SessionEntity,
@@ -135,5 +149,6 @@ export const entities = [
   GroupMemberEntity,
   MessageEntity,
   MessageTimerPreferenceEntity,
-  SecurityEventEntity
+  SecurityEventEntity,
+  PushSubscriptionEntity
 ];

@@ -1,4 +1,4 @@
-const CACHE = 'otpchat-static-v1';
+const CACHE = 'otpchat-static-v2';
 const ASSETS = ['/', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -14,6 +14,17 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
+});
+
+self.addEventListener('push', (event) => {
+  event.waitUntil(
+    self.registration.showNotification('Mensajes nuevos', {
+      tag: 'otpchat-messages',
+      renotify: false,
+      icon: '/icons/icon.svg',
+      badge: '/icons/icon.svg'
+    })
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {
