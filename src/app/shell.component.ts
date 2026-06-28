@@ -34,13 +34,14 @@ export class ShellComponent implements OnInit {
   pushSubscribed = signal(localStorage.getItem('otpchat_push_subscribed') === 'on');
   deferredInstallPrompt = signal<any>(null);
   standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
-  darkMode = signal(localStorage.getItem('otpchat_theme') === 'dark');
+  darkMode = signal(localStorage.getItem('otpchat_theme') !== 'light');
   authMode: 'login' | 'register' = 'login';
   authError = signal('');
   authSubmitting = signal(false);
   contacts = signal<Contact[]>([]);
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
+  showJumpToLatest = signal(false);
   selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string } | null>(null);
   draft = '';
   panel: 'list' | 'chat' = 'list';
@@ -200,6 +201,12 @@ export class ShellComponent implements OnInit {
       event.preventDefault();
       void this.send();
     }
+  }
+
+  onMessagesScroll() {
+    const box = this.scrollbox?.nativeElement;
+    if (!box) return;
+    this.showJumpToLatest.set(box.scrollHeight - box.scrollTop - box.clientHeight > 180);
   }
 
   async createInvite() {
@@ -572,9 +579,12 @@ export class ShellComponent implements OnInit {
     if (before !== this.messages().length) this.api.toast('Un mensaje temporal expiró');
   }
 
-  private scrollBottom() {
+  scrollBottom() {
     const box = this.scrollbox?.nativeElement;
-    if (box) box.scrollTop = box.scrollHeight;
+    if (box) {
+      box.scrollTop = box.scrollHeight;
+      this.showJumpToLatest.set(false);
+    }
   }
 
   private async notifyNewMessage() {
