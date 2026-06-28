@@ -120,14 +120,19 @@ function sendToGroup(groupId, event) {
   for (const member of members) sendToUser(member.userId, event);
 }
 
-async function sendPushToUsers(userIds) {
+async function sendPushToUsers(userIds, context = {}) {
   if (!vapidPublicKey || !vapidPrivateKey || !userIds.length) return;
   const ids = new Set(userIds);
   const subscriptions = state().pushSubscriptions.filter((item) => ids.has(item.userId));
   const staleEndpoints = [];
+  const payload = JSON.stringify({
+    title: 'Mensajes nuevos',
+    scope: context.scope,
+    targetId: context.targetId
+  });
   await Promise.all(subscriptions.map(async (item) => {
     try {
-      await webpush.sendNotification(item.subscription, JSON.stringify({ title: 'Mensajes nuevos' }));
+      await webpush.sendNotification(item.subscription, payload);
     } catch (err) {
       if ([404, 410].includes(err?.statusCode)) staleEndpoints.push(item.endpoint);
     }
@@ -644,7 +649,7 @@ app.post('/api/messages', auth, async (req, res) => {
     : targetId.split(':').filter((id) => id !== req.user.id);
   if (scope === 'group') sendToGroup(targetId, event);
   else sendToConversation(targetId, event);
-  void sendPushToUsers(recipientIds);
+  void sendPushToUsers(recipientIds, { scope, targetId });
   res.json({ message });
 });
 

@@ -83,6 +83,7 @@ export class ShellComponent implements OnInit {
     }, 100);
     setInterval(() => this.pruneExpired(), 1000);
     window.visualViewport?.addEventListener('resize', () => document.documentElement.style.setProperty('--vvh', `${window.visualViewport?.height || window.innerHeight}px`));
+    window.addEventListener('hashchange', () => void this.handlePushNavigationFromUrl());
     window.addEventListener('beforeinstallprompt', (event) => {
       event.preventDefault();
       this.deferredInstallPrompt.set(event);
@@ -142,11 +143,22 @@ export class ShellComponent implements OnInit {
     this.syncSelectedFromBootstrap(data.contacts, data.groups);
     this.api.connect((event) => void this.onSocket(event));
     const open = history.state?.open;
-    if (open) history.replaceState({ ...history.state, open: null }, '', '/#/');
+    const pushOpen = this.consumePushOpen();
+    const pushList = this.consumePushList();
+    if (open || pushOpen || pushList) history.replaceState({ ...history.state, open: null }, '', '/#/');
     const contact = data.contacts.find((c) => c.conversationId === open);
     const group = data.groups.find((g) => g.id === open);
     if (contact) await this.openContact(contact);
     if (group) await this.openGroup(group);
+    if (pushOpen?.scope === 'contact') {
+      const pushContact = data.contacts.find((c) => c.conversationId === pushOpen.id);
+      if (pushContact) await this.openContact(pushContact);
+    }
+    if (pushOpen?.scope === 'group') {
+      const pushGroup = data.groups.find((g) => g.id === pushOpen.id);
+      if (pushGroup) await this.openGroup(pushGroup);
+    }
+    if (pushList && !pushOpen) this.panel = 'list';
     if (this.isAdminRoute() && this.auth.user()?.isSuperadmin) await this.openAdmin();
   }
 
@@ -656,6 +668,41 @@ export class ShellComponent implements OnInit {
 
   canModerate(role?: string) {
     return role === 'admin' || role === 'subadmin';
+  }
+
+  private consumePushOpen(): { scope: 'contact' | 'group'; id: string } | null {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    const raw = params.get('pushOpen') || '';
+    const separator = raw.indexOf(':');
+    if (separator <= 0) return null;
+    const scope = raw.slice(0, separator);
+    const id = raw.slice(separator + 1);
+    return (scope === 'contact' || scope === 'group') && id ? { scope, id } : null;
+  }
+
+  private consumePushList() {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    return params.get('pushList') === '1';
+  }
+
+  private async handlePushNavigationFromUrl() {
+    const pushOpen = this.consumePushOpen();
+    const pushList = this.consumePushList();
+    if (!pushOpen && !pushList) return;
+    if (!this.auth.ready() || !this.auth.user() || (!this.contacts().length && !this.groups().length)) return;
+    history.replaceState({ ...history.state, open: null }, '', '/#/');
+    if (pushList && !pushOpen) {
+      this.panel = 'list';
+      return;
+    }
+    if (pushOpen?.scope === 'contact') {
+      const contact = this.contacts().find((c) => c.conversationId === pushOpen.id);
+      if (contact) await this.openContact(contact);
+    }
+    if (pushOpen?.scope === 'group') {
+      const group = this.groups().find((g) => g.id === pushOpen.id);
+      if (group) await this.openGroup(group);
+    }
   }
 
   isGroupOwner(chat?: { scope: 'contact' | 'group'; founderId?: string } | null) {
