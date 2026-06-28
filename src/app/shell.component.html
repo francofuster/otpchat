@@ -182,6 +182,22 @@
   </main>
 }
 
+@if (auth.ready() && !disclaimerAccepted()) {
+  <div class="disclaimer-shade"></div>
+  <section class="disclaimer-modal" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
+    <div class="disclaimer-scroll">
+      <h2 id="disclaimer-title">Declaracion de uso y responsabilidad</h2>
+      <p>OTPChat es una aplicacion disenada principalmente para facilitar conversaciones privadas y seguras entre usuarios, utilizando mecanismos de cifrado y claves locales para reducir la exposicion de informacion sensible.</p>
+      <p>El objetivo de la aplicacion es brindar una herramienta de comunicacion orientada a la privacidad. Sin embargo, el uso que cada persona haga de OTPChat es responsabilidad exclusiva de dicha persona. OTPChat, sus desarrolladores, administradores o responsables tecnicos no se hacen responsables por usos indebidos, ilegales, abusivos, fraudulentos, daninos o contrarios a las leyes aplicables.</p>
+      <p>El usuario se compromete a no utilizar la aplicacion para acosar, amenazar, extorsionar, difamar, distribuir contenido ilegal, coordinar actividades ilicitas, vulnerar derechos de terceros o realizar cualquier accion que pueda causar dano a otras personas, instituciones, sistemas o servicios.</p>
+      <p>Aunque OTPChat implementa medidas orientadas a proteger la privacidad de las conversaciones, ningun sistema informatico puede garantizar seguridad absoluta. El usuario entiende que factores externos, perdida de claves locales, eliminacion de datos del navegador, compromiso del dispositivo, errores de configuracion o ataques fuera del control de la aplicacion pueden afectar el acceso, la confidencialidad o la disponibilidad de la informacion.</p>
+      <p>Las claves secretas utilizadas para descifrar mensajes se almacenan localmente en el dispositivo del usuario. Si el usuario borra los datos del navegador, cambia de dispositivo o pierde dichas claves, es posible que no pueda recuperar mensajes anteriores. OTPChat no almacena las claves secretas necesarias para descifrar conversaciones y, por lo tanto, no puede restaurar el contenido cifrado perdido.</p>
+      <p>Al continuar utilizando OTPChat, el usuario declara comprender estas condiciones y acepta usar la aplicacion de forma responsable, legal y respetuosa.</p>
+      <button class="primary" (click)="acceptDisclaimer()">Acepto</button>
+    </div>
+  </section>
+}
+
 @if (sheet(); as openSheet) {
   <div class="shade" (click)="sheet.set(null)"></div>
   <section class="sheet" [class.qr-sheet]="invite()">

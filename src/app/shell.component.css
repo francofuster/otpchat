@@ -109,6 +109,12 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
 
 .shade { position: fixed; inset: 0; background: rgba(11, 7, 5, .72); backdrop-filter: blur(6px); z-index: 10; animation: fade-in .18s ease both; }
 .sheet { position: fixed; z-index: 11; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(620px, calc(100vw - 28px)); max-height: min(86dvh, 720px); overflow: auto; background: var(--panel-glass); border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: 0 28px 90px var(--shadow); display: grid; gap: 12px; backdrop-filter: blur(24px) saturate(1.2); animation: sheet-in .2s cubic-bezier(.2,.8,.2,1) both; transform-origin: center; }
+.disclaimer-shade { position: fixed; inset: 0; z-index: 30; background: rgba(11, 7, 5, .78); backdrop-filter: blur(8px); animation: fade-in .18s ease both; }
+.disclaimer-modal { position: fixed; z-index: 31; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(680px, calc(100vw - 28px)); max-height: min(84dvh, 760px); background: var(--panel-glass); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 30px 100px var(--shadow); backdrop-filter: blur(24px) saturate(1.2); overflow: hidden; animation: sheet-in .2s cubic-bezier(.2,.8,.2,1) both; }
+.disclaimer-scroll { max-height: min(84dvh, 760px); overflow: auto; padding: 22px; display: grid; gap: 12px; }
+.disclaimer-scroll h2 { margin: 0 0 4px; }
+.disclaimer-scroll p { margin: 0; color: var(--muted); line-height: 1.55; }
+.disclaimer-scroll .primary { margin-top: 8px; min-height: 44px; }
 .sheet h2 { margin: 4px 0; }
 .sheet img { width: min(320px, 100%); justify-self: center; border: 1px solid var(--line); border-radius: 8px; }
 .copy-link { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; }

@@ -34,6 +34,7 @@ export class ShellComponent implements OnInit {
   pushSubscribed = signal(localStorage.getItem('otpchat_push_subscribed') === 'on');
   deferredInstallPrompt = signal<any>(null);
   standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
+  disclaimerAccepted = signal(localStorage.getItem('otpchat_disclaimer_accepted') === '1');
   darkMode = signal(localStorage.getItem('otpchat_theme') !== 'light');
   authMode: 'login' | 'register' = 'login';
   authError = signal('');
@@ -444,6 +445,11 @@ export class ShellComponent implements OnInit {
     this.authError.set('');
     this.password = '';
     this.repeatPassword = '';
+  }
+
+  acceptDisclaimer() {
+    localStorage.setItem('otpchat_disclaimer_accepted', '1');
+    this.disclaimerAccepted.set(true);
   }
 
   toggleTheme() {
