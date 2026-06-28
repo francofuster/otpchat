@@ -1,5 +1,10 @@
 @if (!auth.ready()) {
-  <main class="center"><div class="loader">Cargando OTPChat...</div></main>
+  <main class="center">
+    <div class="loader">
+      <span>Cargando OTPChat</span>
+      <span class="loading-dots" aria-label="Cargando"><i></i><i></i><i></i></span>
+    </div>
+  </main>
 } @else if (!auth.user()) {
   <main class="center">
     <form class="auth" (ngSubmit)="login()">
