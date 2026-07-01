@@ -1,5 +1,5 @@
 .center { min-height: 100dvh; display: grid; place-items: center; padding: 20px; }
-.loader { display: grid; justify-items: center; gap: 12px; padding: 22px 28px; min-width: 220px; background: var(--panel-glass); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 80px var(--shadow); backdrop-filter: blur(22px) saturate(1.25); color: var(--ink); font-weight: 800; text-align: center; }
+.loader { display: grid; justify-self: center; align-self: center; justify-items: center; gap: 12px; width: max-content; max-width: calc(100vw - 32px); padding: 22px 28px; min-width: 220px; background: var(--panel-glass); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 80px var(--shadow); backdrop-filter: blur(22px) saturate(1.25); color: var(--ink); font-weight: 800; text-align: center; }
 .loader .loading-dots { color: var(--blue); }
 .auth { width: min(440px, 100%); display: grid; gap: 12px; padding: 24px; background: var(--panel-glass); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 80px var(--shadow); backdrop-filter: blur(22px) saturate(1.25); }
 .brand { display: flex; align-items: center; gap: 12px; }
