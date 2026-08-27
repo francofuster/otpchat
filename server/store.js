@@ -12,6 +12,7 @@ const collections = {
   groupMembers: 'GroupMember',
   messages: 'Message',
   messageTimerPreferences: 'MessageTimerPreference',
+  messageReadStates: 'MessageReadState',
   securityEvents: 'SecurityEvent',
   pushSubscriptions: 'PushSubscription'
 };
@@ -79,7 +80,7 @@ function repo(key) {
 
 function uniqueKeyFor(key, item) {
   if (key === 'groupMembers') return `${item.groupId}:${item.userId}`;
-  if (key === 'messageTimerPreferences') return `${item.userId}:${item.scope}:${item.targetId}`;
+  if (key === 'messageTimerPreferences' || key === 'messageReadStates') return `${item.userId}:${item.scope}:${item.targetId}`;
   if (key === 'pushSubscriptions') return item.endpoint;
   return item.id;
 }
@@ -121,6 +122,7 @@ export async function saveStore() {
   await saveCollection('groupMembers');
   await saveCollection('messages');
   await saveCollection('messageTimerPreferences');
+  await saveCollection('messageReadStates');
   await saveCollection('securityEvents');
   await saveCollection('pushSubscriptions');
 }

@@ -88,6 +88,10 @@ export class ApiService {
     return firstValueFrom(this.http.get<{ messages: ChatMessage[] }>(apiUrl(`/api/messages/${scope}/${id}`)));
   }
 
+  markRead(scope: 'contact' | 'group', id: string) {
+    return firstValueFrom(this.http.post(apiUrl(`/api/messages/${scope}/${id}/read`), {}));
+  }
+
   sendMessage(scope: 'contact' | 'group', targetId: string, encrypted: any) {
     return firstValueFrom(this.http.post<{ message: ChatMessage }>(apiUrl('/api/messages'), { scope, targetId, encrypted }));
   }

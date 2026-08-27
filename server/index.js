@@ -201,6 +201,45 @@ function setTimerPreference(userId, scope, targetId, timerSeconds) {
   return preference;
 }
 
+function markAsRead(userId, scope, targetId) {
+  let readState = state().messageReadStates.find((item) => item.userId === userId && item.scope === scope && item.targetId === targetId);
+  if (!readState) {
+    readState = { userId, scope, targetId, lastReadAt: nowIso() };
+    state().messageReadStates.push(readState);
+    return readState;
+  }
+  readState.lastReadAt = nowIso();
+  return readState;
+}
+
+// Un solo recorrido sobre messages para contar los no leidos de cada chat del usuario.
+function unreadCounts(userId) {
+  const lastRead = new Map();
+  for (const item of state().messageReadStates) {
+    if (item.userId === userId) lastRead.set(`${item.scope}:${item.targetId}`, new Date(item.lastReadAt).getTime());
+  }
+  const joinedAt = new Map();
+  for (const member of state().groupMembers) {
+    if (member.userId === userId) joinedAt.set(member.groupId, new Date(member.joinedAt || 0).getTime());
+  }
+  const counts = new Map();
+  for (const contact of state().contacts) {
+    if (contact.userIds.includes(userId)) counts.set(`contact:${contact.conversationId}`, 0);
+  }
+  for (const groupId of joinedAt.keys()) counts.set(`group:${groupId}`, 0);
+  const now = Date.now();
+  for (const message of state().messages) {
+    const key = `${message.scope}:${message.targetId}`;
+    if (message.senderId === userId || !counts.has(key)) continue;
+    if (message.expiresAt && new Date(message.expiresAt).getTime() <= now) continue;
+    const createdAt = new Date(message.createdAt).getTime();
+    if (message.scope === 'group' && createdAt < (joinedAt.get(message.targetId) || 0)) continue;
+    if (createdAt <= (lastRead.get(key) || 0)) continue;
+    counts.set(key, counts.get(key) + 1);
+  }
+  return counts;
+}
+
 app.post('/api/auth/register', registerLimiter, async (req, res) => {
   const { username, password, fingerprint } = req.body || {};
   if (!username || !password || !fingerprint) return res.status(400).json({ error: 'Faltan datos' });
@@ -331,17 +370,24 @@ app.patch('/api/auth/username', auth, async (req, res) => {
 });
 
 app.get('/api/bootstrap', auth, (req, res) => {
+  const unread = unreadCounts(req.user.id);
   const contacts = state().contacts
     .filter((c) => c.userIds.includes(req.user.id))
     .map((c) => {
       const otherId = c.userIds.find((id) => id !== req.user.id);
-      return { ...c, timerSeconds: timerPreference(req.user.id, 'contact', c.conversationId), other: publicUser(state().users.find((u) => u.id === otherId)) };
+      return {
+        ...c,
+        timerSeconds: timerPreference(req.user.id, 'contact', c.conversationId),
+        unreadCount: unread.get(`contact:${c.conversationId}`) || 0,
+        other: publicUser(state().users.find((u) => u.id === otherId))
+      };
     });
   const groups = state().groupMembers
     .filter((m) => m.userId === req.user.id)
     .map((m) => {
       const group = state().groups.find((g) => g.id === m.groupId);
-      return groupPayload(group, req.user.id);
+      const payload = groupPayload(group, req.user.id);
+      return payload && { ...payload, unreadCount: unread.get(`group:${group.id}`) || 0 };
     })
     .filter(Boolean);
   res.json({ contacts, groups });
@@ -555,6 +601,7 @@ app.delete('/api/groups/:id/leave', auth, async (req, res) => {
   let newOwner = null;
   await mutate((db) => {
     db.groupMembers = db.groupMembers.filter((m) => !(m.groupId === group.id && m.userId === req.user.id));
+    db.messageReadStates = db.messageReadStates.filter((p) => !(p.scope === 'group' && p.targetId === group.id && p.userId === req.user.id));
     const remaining = db.groupMembers
       .filter((m) => m.groupId === group.id)
       .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
@@ -564,6 +611,7 @@ app.delete('/api/groups/:id/leave', auth, async (req, res) => {
       db.messages = db.messages.filter((m) => !(m.scope === 'group' && m.targetId === group.id));
       db.invitations = db.invitations.filter((i) => i.groupId !== group.id);
       db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
+      db.messageReadStates = db.messageReadStates.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
       return;
     }
     if (group.founderId === req.user.id) {
@@ -591,6 +639,7 @@ app.delete('/api/groups/:id', auth, async (req, res) => {
     db.messages = db.messages.filter((m) => !(m.scope === 'group' && m.targetId === group.id));
     db.invitations = db.invitations.filter((i) => i.groupId !== group.id);
     db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
+    db.messageReadStates = db.messageReadStates.filter((p) => !(p.scope === 'group' && p.targetId === group.id));
   });
   for (const id of memberIds) sendToUser(id, { type: 'group:deleted', groupId: group.id });
   res.json({ deleted: true });
@@ -603,17 +652,21 @@ app.delete('/api/conversations/:id', auth, async (req, res) => {
     db.contacts = db.contacts.filter((c) => c.id !== contact.id);
     db.messages = db.messages.filter((m) => !(m.scope === 'contact' && m.targetId === contact.conversationId));
     db.messageTimerPreferences = db.messageTimerPreferences.filter((p) => !(p.scope === 'contact' && p.targetId === contact.conversationId));
+    db.messageReadStates = db.messageReadStates.filter((p) => !(p.scope === 'contact' && p.targetId === contact.conversationId));
   });
   sendToConversation(contact.conversationId, { type: 'contact:deleted', conversationId: contact.conversationId });
   res.json({ deleted: true });
 });
 
+function canAccessChat(userId, scope, targetId) {
+  if (scope === 'contact') return state().contacts.some((c) => c.conversationId === targetId && c.userIds.includes(userId));
+  if (scope === 'group') return state().groupMembers.some((m) => m.groupId === targetId && m.userId === userId);
+  return false;
+}
+
 app.get('/api/messages/:scope/:id', auth, (req, res) => {
   const { scope, id } = req.params;
-  const allowed =
-    (scope === 'contact' && state().contacts.some((c) => c.conversationId === id && c.userIds.includes(req.user.id))) ||
-    (scope === 'group' && state().groupMembers.some((m) => m.groupId === id && m.userId === req.user.id));
-  if (!allowed) return res.status(403).json({ error: 'Sin acceso' });
+  if (!canAccessChat(req.user.id, scope, id)) return res.status(403).json({ error: 'Sin acceso' });
   const messages = state().messages
     .filter((m) => {
       if (m.scope !== scope || m.targetId !== id || (m.expiresAt && new Date(m.expiresAt).getTime() <= Date.now())) return false;
@@ -626,12 +679,16 @@ app.get('/api/messages/:scope/:id', auth, (req, res) => {
   res.json({ messages });
 });
 
+app.post('/api/messages/:scope/:id/read', auth, async (req, res) => {
+  const { scope, id } = req.params;
+  if (!canAccessChat(req.user.id, scope, id)) return res.status(403).json({ error: 'Sin acceso' });
+  await mutate(() => markAsRead(req.user.id, scope, id));
+  res.json({ ok: true });
+});
+
 app.post('/api/messages', auth, async (req, res) => {
   const { scope, targetId, encrypted } = req.body || {};
-  const allowed =
-    (scope === 'contact' && state().contacts.some((c) => c.conversationId === targetId && c.userIds.includes(req.user.id))) ||
-    (scope === 'group' && state().groupMembers.some((m) => m.groupId === targetId && m.userId === req.user.id));
-  if (!allowed || !encrypted?.ciphertext) return res.status(400).json({ error: 'Mensaje inválido' });
+  if (!canAccessChat(req.user.id, scope, targetId) || !encrypted?.ciphertext) return res.status(400).json({ error: 'Mensaje inválido' });
   const timerSeconds = timerPreference(req.user.id, scope, targetId);
   const message = {
     id: makeId('msg'),
@@ -693,6 +750,7 @@ app.delete('/api/admin/users', auth, requireAdmin, async (req, res) => {
     db.contacts = db.contacts.filter((c) => !c.userIds.some((id) => ids.includes(id)));
     db.messages = db.messages.filter((m) => !ids.includes(m.senderId));
     db.groupMembers = db.groupMembers.filter((m) => !ids.includes(m.userId));
+    db.messageReadStates = db.messageReadStates.filter((p) => !ids.includes(p.userId));
   });
   res.json({ deleted: ids });
 });

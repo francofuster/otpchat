@@ -114,6 +114,19 @@ export const MessageTimerPreferenceEntity = new EntitySchema({
   indices: [{ name: 'idx_timer_preferences_unique', columns: ['userId', 'scope', 'targetId'], unique: true }]
 });
 
+export const MessageReadStateEntity = new EntitySchema({
+  name: 'MessageReadState',
+  tableName: 'message_read_states',
+  columns: {
+    id: { type: 'integer', primary: true, generated: true },
+    userId: { type: 'varchar' },
+    scope: { type: 'varchar' },
+    targetId: { type: 'varchar' },
+    lastReadAt: { type: 'text' }
+  },
+  indices: [{ name: 'idx_read_states_unique', columns: ['userId', 'scope', 'targetId'], unique: true }]
+});
+
 export const SecurityEventEntity = new EntitySchema({
   name: 'SecurityEvent',
   tableName: 'security_events',
@@ -149,6 +162,7 @@ export const entities = [
   GroupMemberEntity,
   MessageEntity,
   MessageTimerPreferenceEntity,
+  MessageReadStateEntity,
   SecurityEventEntity,
   PushSubscriptionEntity
 ];

@@ -10,6 +10,7 @@
   --muted: #826f60;
   --line: rgba(120, 84, 52, .18);
   --danger: #d62828;
+  --badge: #d62828;
   --warning: #f5ad42;
   --ok: #39c6a5;
   --shadow: rgba(72, 39, 16, .22);
@@ -29,6 +30,7 @@
   --muted: #bba795;
   --line: rgba(255, 211, 166, .14);
   --danger: #ff7a7a;
+  --badge: #e03131;
   --warning: #ffd166;
   --ok: #61d6b8;
   --shadow: rgba(0, 0, 0, .55);

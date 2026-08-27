@@ -141,6 +141,10 @@ export class ShellComponent implements OnInit {
     const data = await this.api.bootstrap();
     this.contacts.set(data.contacts);
     this.groups.set(data.groups);
+    this.badge.set(Object.fromEntries([
+      ...data.contacts.map((c) => [c.conversationId, c.unreadCount || 0] as const),
+      ...data.groups.map((g) => [g.id, g.unreadCount || 0] as const)
+    ].map(([id, count]) => [id, this.chatVisible(id) ? 0 : count] as const)));
     this.syncSelectedFromBootstrap(data.contacts, data.groups);
     this.api.connect((event) => void this.onSocket(event));
     const open = history.state?.open;
@@ -189,7 +193,22 @@ export class ShellComponent implements OnInit {
     }
     this.messages.set(decrypted);
     this.badge.update((b) => ({ ...b, [chat.id]: 0 }));
+    void this.markRead(chat.scope, chat.id);
     setTimeout(() => this.scrollBottom(), 40);
+  }
+
+  badgeLabel(count: number) {
+    return count > 99 ? '+99' : String(count);
+  }
+
+  private async markRead(scope: 'contact' | 'group', id: string) {
+    try {
+      await this.api.markRead(scope, id);
+    } catch {}
+  }
+
+  private chatVisible(id: string) {
+    return this.selected()?.id === id && (this.panel === 'chat' || !matchMedia('(max-width: 760px)').matches);
   }
 
   async send() {
@@ -575,7 +594,8 @@ export class ShellComponent implements OnInit {
     if (event.type?.startsWith('group:')) await this.load();
     if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
     if (event.type === 'message:new') {
-      if (event.message.senderId !== this.auth.user()?.id && !('PushManager' in window)) void this.notifyNewMessage();
+      const mine = event.message.senderId === this.auth.user()?.id;
+      if (!mine && !('PushManager' in window)) void this.notifyNewMessage();
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
         const secret = this.secrets.getVersion(chat.scope, chat.id, event.message.encrypted.keyVersion || 1) || chat.secret;
@@ -583,7 +603,10 @@ export class ShellComponent implements OnInit {
         event.message.text = this.applyKeyRotation(chat.scope, chat.id, text);
         this.messages.update((items) => items.some((item) => item.id === event.message.id) ? items : [...items, event.message]);
         setTimeout(() => this.scrollBottom(), 40);
-      } else {
+      }
+      if (!mine && this.chatVisible(event.message.targetId)) {
+        void this.markRead(event.message.scope, event.message.targetId);
+      } else if (!mine) {
         this.badge.update((b) => ({ ...b, [event.message.targetId]: (b[event.message.targetId] || 0) + 1 }));
         this.api.toast('Mensaje nuevo');
       }

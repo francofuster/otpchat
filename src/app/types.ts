@@ -13,6 +13,7 @@ export interface Contact {
   conversationId: string;
   userIds: string[];
   timerSeconds: number;
+  unreadCount: number;
   other: User;
 }
 
@@ -23,6 +24,7 @@ export interface Group {
   keyVersion: number;
   joinedAt?: string;
   timerSeconds: number;
+  unreadCount?: number;
   role: 'admin' | 'subadmin' | 'member';
 }
 

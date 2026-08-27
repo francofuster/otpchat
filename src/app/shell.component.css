@@ -70,7 +70,7 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
 .list h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: .08em; margin: 18px 6px 8px; }
 .item { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; justify-items: start; gap: 10px; padding: 11px 10px; min-height: 66px; margin-bottom: 4px; background: transparent; text-align: left; border-radius: 14px; }
 .item:hover { background: color-mix(in srgb, var(--panel) 75%, var(--blue) 18%); }
-.item b { min-width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; background: var(--blue); color: #fff; font-size: 12px; }
+.item .unread { min-width: 22px; height: 22px; padding: 0 7px; display: grid; place-items: center; border-radius: 999px; background: var(--badge); color: #fff; font-size: 12px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; box-shadow: 0 2px 8px color-mix(in srgb, var(--badge) 45%, transparent); }
 .item-main { min-width: 0; display: grid; justify-items: start; gap: 3px; }
 .item-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .item small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
