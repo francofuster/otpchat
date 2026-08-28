@@ -48,9 +48,13 @@ npm run e2e     # end-to-end con Cypress
 npm run e2e:open # Cypress en modo interactivo
 ```
 
-Las specs E2E cubren el badge de no leidos (`badge-no-leidos.cy.js`), el alta y
+Las specs E2E cubren el badge de no leidos (`badge-no-leidos.cy.js`), el cifrado de punta
+a punta (`cifrado.cy.js`), los mensajes temporales (`temporales.cy.js`), el alta y
 moderacion de grupos (`grupos.cy.js`) y las invitaciones de contacto por link
 (`invitaciones.cy.js`).
+
+`temporales.cy.js` tarda alrededor de un minuto: el temporizador mas corto de la app es de
+30s y hay un test que espera de verdad a que el mensaje se borre solo de la pantalla.
 
 Ambos corren contra bases Postgres **descartables** (`otpchat_test` y `otpchat_e2e`), que
 se crean solas y se recrean vacias en cada corrida. Ninguna prueba toca la base de la app.

@@ -49,3 +49,30 @@ Cypress.Commands.add('crearGrupoEnLaUi', (nombre) => {
 Cypress.Commands.add('linkDeInvitacion', () =>
   cy.get('.sheet .copy-link input').should('not.have.value', '').invoke('val')
 );
+
+// Deja al navegador dentro de un chat 1 a 1 con la llave local ya guardada, que es la
+// unica forma de poder cifrar y descifrar. Acepta la invitacion desde el link, igual que
+// lo haria una persona. Devuelve el contexto para poder consultar el servidor despues.
+Cypress.Commands.add('abrirChatCifrado', () =>
+  cy.task('crearInvitacionConLlave').then(({ anfitrion, invitado, link }) => {
+    cy.entrarComo(invitado);
+    cy.visit(link);
+    cy.contains('.box button', 'Aceptar').click();
+    cy.get('.sidebar', { timeout: 15000 }).should('be.visible');
+    cy.contains('.item', anfitrion).click();
+    cy.get('.composer textarea').should('be.visible');
+
+    return cy.window().then((win) => {
+      const clave = Object.keys(win.localStorage).find((k) => k.startsWith('otpchat_secret:contact:'));
+      expect(clave, 'la llave del chat quedo guardada en el navegador').to.be.a('string');
+      return { anfitrion, invitado, conversationId: clave.replace('otpchat_secret:contact:', '') };
+    });
+  })
+);
+
+// Escribe y manda un mensaje por la caja de texto del chat abierto.
+Cypress.Commands.add('enviarMensaje', (texto) => {
+  cy.get('.composer textarea').clear().type(texto);
+  cy.get('.composer button.send').click();
+  cy.get('.composer textarea').should('have.value', '');
+});

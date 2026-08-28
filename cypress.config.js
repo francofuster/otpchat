@@ -1,4 +1,5 @@
 import { defineConfig } from 'cypress';
+import { randomBytes } from 'node:crypto';
 
 const apiBase = process.env.E2E_API_BASE || 'http://localhost:4900';
 const password = 'Test-1234';
@@ -101,6 +102,39 @@ export default defineConfig({
             contactos: contacts.map((c) => c.other.username),
             grupos: groups.map((g) => ({ nombre: g.name, rol: g.role }))
           };
+        },
+
+        // Invitacion lista para aceptar, con la llave ya colgada del hash.
+        // La llave es opaca para el servidor (se genera y se guarda solo en el cliente),
+        // asi que armarla aca produce un link identico al que fabrica la UI.
+        async crearInvitacionConLlave() {
+          const anfitrion = nombreUnico('e2e_anf');
+          const invitado = nombreUnico('e2e_inv');
+          const sesion = await registrar(anfitrion);
+          await registrar(invitado);
+          const { invitation } = await api('/api/invitations/contact', { method: 'POST', token: sesion.token });
+          const llave = randomBytes(32).toString('base64url');
+          return { anfitrion, invitado, code: invitation.code, llave, link: `${invitation.link}?key=${llave}&kv=1` };
+        },
+
+        // Lo que quedo realmente guardado en el servidor, sin descifrar nada.
+        async mensajesCrudosDe({ username, scope = 'contact', targetId }) {
+          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
+          const { messages } = await api(`/api/messages/${scope}/${targetId}`, { token: sesion.token });
+          return messages.map((m) => ({
+            encrypted: m.encrypted,
+            expiresAt: m.expiresAt,
+            createdAt: m.createdAt,
+            remitente: m.sender?.username ?? null,
+            crudo: JSON.stringify(m)
+          }));
+        },
+
+        // Fija el temporizador de un usuario para un chat, sin pasar por la UI.
+        async fijarTemporizador({ username, conversationId, segundos }) {
+          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
+          await api(`/api/conversations/${conversationId}/timer`, { method: 'PATCH', token: sesion.token, body: { timerSeconds: segundos } });
+          return null;
         },
 
         async noLeidosSegunServidor({ username, conversationId }) {
