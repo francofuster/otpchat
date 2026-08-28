@@ -706,7 +706,7 @@ app.post('/api/messages', auth, async (req, res) => {
     : targetId.split(':').filter((id) => id !== req.user.id);
   if (scope === 'group') sendToGroup(targetId, event);
   else sendToConversation(targetId, event);
-  void sendPushToUsers(recipientIds, { scope, targetId });
+  void sendPushToUsers(recipientIds, { scope, targetId }).catch((err) => console.error('sendPushToUsers:', err));
   res.json({ message });
 });
 
@@ -771,5 +771,7 @@ wss.on('connection', (ws, req) => {
 });
 
 await loadStore();
-setInterval(() => void cleanupExpiredMessages(), 30_000);
+// Sin catch, un fallo de escritura aca queda como rechazo sin manejar y Node baja
+// el proceso entero. Preferimos loguear y seguir con el proximo tick.
+setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
 server.listen(port, () => console.log(`OTPChat API on http://localhost:${port}`));

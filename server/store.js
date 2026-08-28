@@ -131,10 +131,22 @@ export function state() {
   return db;
 }
 
-export async function mutate(fn) {
-  const result = fn(db);
-  await saveStore();
-  return result;
+let pendingWrite = Promise.resolve();
+
+// Las escrituras se serializan en una cola. saveCollection() captura db[key] y recien
+// despues hace await, asi que dos saveStore() solapados pueden trabajar sobre arrays
+// distintos e insertar la misma fila dos veces (duplicate key sobre el PK). Encolar
+// garantiza que fn(db) y su guardado corran sin que otra mutacion se meta en el medio.
+export function mutate(fn) {
+  const run = pendingWrite.then(async () => {
+    const result = fn(db);
+    await saveStore();
+    return result;
+  });
+  // La cola sigue viva aunque una mutacion falle: sin esto un error dejaria
+  // encadenado un rechazo y toda escritura posterior fallaria tambien.
+  pendingWrite = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 export function nowIso() {
