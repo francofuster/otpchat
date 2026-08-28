@@ -40,6 +40,25 @@ DEVICE_ACCOUNT_LIMIT_ENABLED=false
 
 Con `TYPEORM_SYNCHRONIZE=true`, TypeORM crea y actualiza las tablas automáticamente al iniciar.
 
+## Tests
+
+```bash
+npm test        # capa de persistencia (rapido, sin navegador)
+npm run e2e     # end-to-end con Cypress
+npm run e2e:open # Cypress en modo interactivo
+```
+
+Ambos corren contra bases Postgres **descartables** (`otpchat_test` y `otpchat_e2e`), que
+se crean solas y se recrean vacias en cada corrida. Ninguna prueba toca la base de la app.
+
+Esto no es automatico: el `.env` apunta a produccion via `DATABASE_URL`, y en `store.js`
+esa variable gana sobre `PGDATABASE`. `scripts/test-env.mjs` la deja vacia antes de que se
+cargue `dotenv` y ademas rechaza cualquier nombre de base que no sea `otpchat_<algo>`.
+
+Los tests E2E levantan el backend con `RATE_LIMIT_ENABLED=false`, porque con el limite real
+de 3 registros por hora no se puede automatizar ningun alta. En produccion el flag no se
+setea y los limitadores quedan activos.
+
 ## Features implementadas
 
 - Registro/login con bcrypt 12 rondas, JWT 7 días y refresh token rotativo por dispositivo.
@@ -53,6 +72,7 @@ Con `TYPEORM_SYNCHRONIZE=true`, TypeORM crea y actualiza las tablas automáticam
 - Mensajes temporales por chat/grupo con countdown, desaparición local y limpieza server cada 30s.
 - Grupos con secreto OTP, invitación QR y rol admin básico para editar nombre/timer.
 - Panel `/admin` exclusivo para `sup3r4drm1n_3533`, stats, selección, borrado y reset de clave temporal.
+- Badges de mensajes no leidos por chat, contados en el servidor y con tope "+99".
 - PWA con manifest, service worker, icono y layout mobile/desktop.
 
 ## Producción

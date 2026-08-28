@@ -8,7 +8,14 @@
     "dev:api": "node --watch server/index.js",
     "dev:web": "ng serve --host 0.0.0.0 --port 5900 --proxy-config proxy.conf.json",
     "build": "node scripts/write-runtime-config.js && ng build",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node scripts/test-store.mjs",
+    "test:store": "node scripts/test-store.mjs",
+    "e2e:db": "node scripts/e2e-db.mjs",
+    "e2e:api": "node scripts/e2e-backend.mjs",
+    "e2e:web": "ng serve --port 5900 --proxy-config proxy.conf.json",
+    "e2e": "npm run e2e:db && start-server-and-test \"npm run e2e:api\" http://localhost:4900/api/health \"npm run e2e:web\" http://localhost:5900 \"cypress run\"",
+    "e2e:open": "npm run e2e:db && start-server-and-test \"npm run e2e:api\" http://localhost:4900/api/health \"npm run e2e:web\" http://localhost:5900 \"cypress open --e2e\""
   },
   "dependencies": {
     "@angular/animations": "^20.0.0",
@@ -38,6 +45,8 @@
     "@angular/cli": "^20.0.0",
     "@angular/compiler-cli": "^20.0.0",
     "concurrently": "^9.2.0",
+    "cypress": "^15.21.1",
+    "start-server-and-test": "^3.0.12",
     "typescript": "~5.8.3"
   }
 }

@@ -4,3 +4,8 @@ dist/
 data/
 *.log
 .env
+
+# Cypress
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/

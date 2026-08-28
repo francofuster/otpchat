@@ -31,6 +31,9 @@ const superadminName = 'sup3r4drm1n_3533';
 const online = new Map();
 const registerCooldownEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.REGISTER_COOLDOWN_ENABLED || '').toLowerCase());
 const deviceAccountLimitEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.DEVICE_ACCOUNT_LIMIT_ENABLED || '').toLowerCase());
+// Viene habilitado siempre salvo que se apague a proposito. Solo los tests E2E lo apagan:
+// con 3 registros por hora no se puede automatizar ningun flujo de alta.
+const rateLimitEnabled = !['0', 'false', 'no', 'off'].includes(String(process.env.RATE_LIMIT_ENABLED || '').toLowerCase());
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.VAPID_SUBJECT || `mailto:admin@${new URL(clientOrigin).hostname}`;
@@ -46,10 +49,13 @@ function inviteLink(code) {
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
-app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }));
+const sinLimite = (req, res, next) => next();
+const limiter = (options) => (rateLimitEnabled ? rateLimit(options) : sinLimite);
 
-const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
-const registerLimiter = rateLimit({ windowMs: 60 * 60_000, limit: 3, standardHeaders: true, legacyHeaders: false });
+app.use(limiter({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }));
+
+const loginLimiter = limiter({ windowMs: 15 * 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
+const registerLimiter = limiter({ windowMs: 60 * 60_000, limit: 3, standardHeaders: true, legacyHeaders: false });
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
@@ -239,6 +245,9 @@ function unreadCounts(userId) {
   }
   return counts;
 }
+
+// Sin auth a proposito: lo usan el arranque de los tests E2E y el health check de Render.
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.post('/api/auth/register', registerLimiter, async (req, res) => {
   const { username, password, fingerprint } = req.body || {};
