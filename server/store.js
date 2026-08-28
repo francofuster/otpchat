@@ -85,46 +85,93 @@ function uniqueKeyFor(key, item) {
   return item.id;
 }
 
-function normalizeCollection(key) {
-  const seen = new Map();
-  for (const item of db[key]) {
-    const uniqueKey = uniqueKeyFor(key, item);
-    if (!uniqueKey) continue;
-    seen.set(uniqueKey, item);
+// Snapshot de lo ultimo que se escribio en la base, por coleccion:
+// claveLogica -> { pk, json }. Comparar contra esto permite escribir SOLO las filas
+// que cambiaron, en vez de reescribir la coleccion entera en cada mutacion.
+const snapshots = Object.fromEntries(Object.keys(collections).map((key) => [key, new Map()]));
+
+function snapshotOf(row) {
+  return { pk: row.id, json: JSON.stringify(row) };
+}
+
+// Deduplica db[key] en memoria y devuelve que hay que insertar, actualizar y borrar.
+function diffCollection(key) {
+  const snapshot = snapshots[key];
+  const vistos = new Map();
+  const inserts = [];
+  const updates = [];
+  for (const row of db[key]) {
+    const logicalKey = uniqueKeyFor(key, row);
+    if (!logicalKey || vistos.has(logicalKey)) continue;
+    vistos.set(logicalKey, row);
+    const json = JSON.stringify(row);
+    const previo = snapshot.get(logicalKey);
+    if (!previo) inserts.push({ logicalKey, row, json });
+    else if (previo.json !== json) updates.push({ logicalKey, row, json });
   }
-  db[key] = [...seen.values()];
+  db[key] = [...vistos.values()];
+  const removals = [];
+  for (const [logicalKey, previo] of snapshot) {
+    if (!vistos.has(logicalKey) && previo.pk !== undefined && previo.pk !== null) {
+      removals.push({ logicalKey, pk: previo.pk });
+    }
+  }
+  return { inserts, updates, removals };
+}
+
+function chunk(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 export async function loadStore() {
   await ensureDatabaseExists();
   if (!AppDataSource.isInitialized) await AppDataSource.initialize();
-  for (const key of Object.keys(collections)) db[key] = await repo(key).find();
+  for (const key of Object.keys(collections)) {
+    db[key] = await repo(key).find();
+    snapshots[key].clear();
+    for (const row of db[key]) snapshots[key].set(uniqueKeyFor(key, row), snapshotOf(row));
+  }
 }
 
+// El snapshot se actualiza recien despues de que cada paso confirma en la base. Si un
+// paso falla, lo ya aplicado queda registrado y el resto se reintenta en el proximo
+// guardado, sin reinsertar lo que ya entro.
 async function saveCollection(key) {
-  normalizeCollection(key);
+  const { inserts, updates, removals } = diffCollection(key);
+  if (!inserts.length && !updates.length && !removals.length) return;
   const repository = repo(key);
-  const primaryColumn = key === 'groupMembers' ? 'id' : 'id';
-  const rows = db[key];
-  const existing = await repository.find();
-  const rowIds = new Set(rows.map((item) => item[primaryColumn]).filter(Boolean));
-  const stale = existing.filter((item) => item[primaryColumn] && !rowIds.has(item[primaryColumn]));
-  if (stale.length) await repository.remove(stale);
-  if (rows.length) await repository.save(rows);
+  const snapshot = snapshots[key];
+
+  if (removals.length) {
+    for (const grupo of chunk(removals, 500)) {
+      await repository.delete(grupo.map((item) => item.pk));
+      for (const item of grupo) snapshot.delete(item.logicalKey);
+    }
+  }
+
+  if (inserts.length) {
+    for (const grupo of chunk(inserts, 500)) {
+      // insert() no consulta si la fila existe, a diferencia de save(). Es seguro
+      // porque el snapshot ya garantiza que estas claves no estaban en la base.
+      // insert() escribe el id generado sobre el objeto que se le pasa, asi que el
+      // snapshot queda con el pk correcto para poder borrar la fila mas adelante.
+      await repository.insert(grupo.map((item) => item.row));
+      for (const item of grupo) snapshot.set(item.logicalKey, snapshotOf(item.row));
+    }
+  }
+
+  if (updates.length) {
+    for (const grupo of chunk(updates, 500)) {
+      await repository.save(grupo.map((item) => item.row));
+      for (const item of grupo) snapshot.set(item.logicalKey, snapshotOf(item.row));
+    }
+  }
 }
 
 export async function saveStore() {
-  await saveCollection('users');
-  await saveCollection('sessions');
-  await saveCollection('contacts');
-  await saveCollection('invitations');
-  await saveCollection('groups');
-  await saveCollection('groupMembers');
-  await saveCollection('messages');
-  await saveCollection('messageTimerPreferences');
-  await saveCollection('messageReadStates');
-  await saveCollection('securityEvents');
-  await saveCollection('pushSubscriptions');
+  for (const key of Object.keys(collections)) await saveCollection(key);
 }
 
 export function state() {
@@ -133,10 +180,10 @@ export function state() {
 
 let pendingWrite = Promise.resolve();
 
-// Las escrituras se serializan en una cola. saveCollection() captura db[key] y recien
-// despues hace await, asi que dos saveStore() solapados pueden trabajar sobre arrays
-// distintos e insertar la misma fila dos veces (duplicate key sobre el PK). Encolar
-// garantiza que fn(db) y su guardado corran sin que otra mutacion se meta en el medio.
+// Las escrituras se serializan en una cola. El guardado calcula un diff contra el
+// snapshot y despues hace await por cada paso; si otra mutacion se colara en el medio,
+// el snapshot y la base quedarian desincronizados y volveria el duplicate key. Encolar
+// garantiza que fn(db) y su guardado corran como una unidad.
 export function mutate(fn) {
   const run = pendingWrite.then(async () => {
     const result = fn(db);
