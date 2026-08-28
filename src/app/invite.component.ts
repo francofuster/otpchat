@@ -21,6 +21,7 @@ import { SecretService } from './secret.service';
         <section class="box">
           <h1>{{ invite().inviter.username }} te invita a chatear</h1>
           <p>{{ invite().group ? 'Grupo: ' + invite().group.name : 'Chat privado 1 a 1 cifrado' }}</p>
+          @if (error()) { <p class="error">{{ error() }}</p> }
           <div class="actions">
             <button class="primary" (click)="accept()">Aceptar</button>
             <button (click)="reject()">Rechazar</button>
@@ -36,6 +37,7 @@ import { SecretService } from './secret.service';
     .box { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; box-shadow: 0 20px 60px var(--shadow); }
     h1 { margin: 0 0 10px; }
     p { color: var(--muted); }
+    .error { color: var(--danger); font-weight: 600; }
     .actions { display: flex; gap: 10px; }
     button, a { border-radius: 8px; padding: 11px 14px; background: color-mix(in srgb, var(--panel) 78%, var(--blue) 22%); color: var(--ink); text-decoration: none; }
     .primary { background: var(--blue); color: white; }

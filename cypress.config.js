@@ -66,6 +66,43 @@ export default defineConfig({
           return null;
         },
 
+        // Un usuario suelto, para los flujos donde la otra persona ya existe.
+        async crearUsuario() {
+          const username = nombreUnico('e2e_u');
+          await registrar(username);
+          return { username, password };
+        },
+
+        // Grupo ya armado con miembros. Sirve para probar la pantalla de miembros sin
+        // gastar medio test en el alta. Ojo: el admin queda SIN la llave local del grupo,
+        // asi que con este grupo no se puede generar el link de invitacion desde la UI.
+        async crearGrupoConMiembros({ miembros = 0, nombre } = {}) {
+          const admin = nombreUnico('e2e_adm');
+          const sesionAdmin = await registrar(admin);
+          const nombreGrupo = nombre || `Grupo ${Math.random().toString(36).slice(2, 7)}`;
+          const { group } = await api('/api/groups', { method: 'POST', token: sesionAdmin.token, body: { name: nombreGrupo } });
+
+          const nombres = [];
+          for (let i = 0; i < miembros; i++) {
+            const miembro = nombreUnico('e2e_m');
+            const sesion = await registrar(miembro);
+            const { invitation } = await api(`/api/groups/${group.id}/invite`, { method: 'POST', token: sesionAdmin.token });
+            await api(`/api/invitations/${invitation.code}/accept`, { method: 'POST', token: sesion.token });
+            nombres.push(miembro);
+          }
+          return { admin, nombreGrupo, groupId: group.id, miembros: nombres };
+        },
+
+        // Lo que ve el servidor para ese usuario, para contrastar contra lo que muestra la UI.
+        async estadoDe({ username }) {
+          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
+          const { contacts, groups } = await api('/api/bootstrap', { token: sesion.token });
+          return {
+            contactos: contacts.map((c) => c.other.username),
+            grupos: groups.map((g) => ({ nombre: g.name, rol: g.role }))
+          };
+        },
+
         async noLeidosSegunServidor({ username, conversationId }) {
           const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
           const { contacts } = await api('/api/bootstrap', { token: sesion.token });
