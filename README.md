@@ -1,29 +1,64 @@
 # OTPChat
 
-Web app de chat cifrado con Angular, Node.js, Express, WebSocket, TypeORM y Postgres.
+**[otpchat.vercel.app](https://otpchat.vercel.app/)** — Chat cifrado de punta a punta para dos o más participantes. Cada mensaje se encripta **en el navegador** con AES-256-GCM antes de viajar al servidor, usando una clave derivada de un código TOTP (RFC 6238) y un secreto de sala: el backend nunca ve texto en claro.
 
-## Ejecutar en desarrollo
+---
+
+## Cómo funciona
+
+```
+Navegador A                  Servidor (Node/Express)          Navegador B
+─────────────────────        ──────────────────────           ─────────────────────
+TOTP + secreto de sala  →    Solo ve texto cifrado   →        TOTP + secreto de sala
+AES-256-GCM encripta         WebSocket retransmite            AES-256-GCM desencripta
+                             PostgreSQL persiste               Texto legible en UI
+```
+
+### Stack
+
+| Capa | Tecnología |
+|---|---|
+| Frontend | Angular 20, PWA |
+| Backend | Node.js, Express 5, WebSocket (`ws`) |
+| Base de datos | PostgreSQL 14+ vía TypeORM |
+| Autenticación | JWT 7 días + refresh token rotativo por dispositivo |
+| Cifrado | AES-256-GCM, PBKDF2, TOTP RFC 6238 en Web Crypto API |
+
+### Características
+
+- **Chat 1 a 1 y grupal** por WebSocket con historial limitado a 300 mensajes
+- **TOTP visual** con indicador naranja/rojo cuando el código está por vencer
+- **Mensajes temporales** con countdown y limpieza automática server-side cada 30 s
+- **Invitaciones por QR** para contactos y grupos, con expiración y cancelación
+- **Fingerprint de dispositivo** con Canvas, WebGL, audio y fuentes + hash SHA-256
+- **Badges de no leídos** por chat, contados en el servidor, con tope "+99"
+- **Panel `/admin`** con stats, selección y borrado de cuentas (acceso por nombre reservado)
+- **PWA** con manifest, service worker e ícono — instalable en mobile y desktop
+
+---
+
+## Requisitos
+
+- **Node.js** 20 o superior
+- **PostgreSQL** 14 o superior (local o en la nube)
+
+---
+
+## Desarrollo local
 
 ```bash
+git clone https://github.com/tu-usuario/otp-chat.git
+cd otp-chat
 npm install
-npm run dev
 ```
 
-- Frontend: http://localhost:5900
-- Backend: http://localhost:4900
-- Base local: Postgres `otpchat`
-
-## Postgres local
-
-El backend crea la base `otpchat` automáticamente si existe un servidor Postgres local y las credenciales tienen permiso `CREATE DATABASE`.
-
-Si preferís crearla manualmente:
+Copiá el archivo de variables de entorno y editá según tu entorno:
 
 ```bash
-createdb -U postgres otpchat
+cp .env.example .env
 ```
 
-Configurá `.env` desde `.env.example`. Por defecto usa:
+Variables mínimas para desarrollo:
 
 ```env
 PGHOST=localhost
@@ -34,64 +69,117 @@ PGDATABASE=otpchat
 PGMAINTENANCE_DATABASE=postgres
 PG_CREATE_DATABASE=true
 TYPEORM_SYNCHRONIZE=true
+JWT_SECRET=cambia_esto_en_produccion
 REGISTER_COOLDOWN_ENABLED=false
 DEVICE_ACCOUNT_LIMIT_ENABLED=false
 ```
 
-Con `TYPEORM_SYNCHRONIZE=true`, TypeORM crea y actualiza las tablas automáticamente al iniciar.
+Con `PG_CREATE_DATABASE=true` el backend crea la base `otpchat` automáticamente si el usuario de Postgres tiene permiso `CREATE DATABASE`. Si preferís crearla a mano:
+
+```bash
+createdb -U postgres otpchat
+```
+
+Levantá frontend y backend en paralelo:
+
+```bash
+npm run dev
+```
+
+| Servicio | URL |
+|---|---|
+| Frontend | http://localhost:5900 |
+| Backend / API | http://localhost:4900 |
+
+---
+
+## Build propio
+
+El build genera el frontend estático en `dist/otpchat/browser` y deja el backend listo para servir con `npm start`.
+
+### 1. Configurá las variables de entorno de build
+
+El script de build escribe `public/config.js` con la URL del API. Sin esta variable el frontend apunta a `localhost` en producción.
+
+```env
+OTPCHAT_API_BASE=https://tu-backend.example.com
+```
+
+### 2. Compilá
+
+```bash
+npm run build
+```
+
+Esto ejecuta en orden:
+1. `node scripts/write-runtime-config.js` — genera `public/config.js` con la URL del API
+2. `ng build` — compila y optimiza el frontend Angular en `dist/otpchat/browser`
+
+### 3. Servís el backend
+
+El servidor Express sirve el frontend compilado automáticamente en producción:
+
+```bash
+npm start
+```
+
+O con variables de entorno explícitas:
+
+```bash
+NODE_ENV=production DATABASE_URL=postgresql://user:pass@host/otpchat node server/index.js
+```
+
+### Estructura de salida
+
+```
+dist/otpchat/browser/   ← archivos estáticos del frontend (servidos por Express)
+server/                 ← backend Node.js (no se compila, corre directo)
+public/config.js        ← URL del API, generada en build time
+```
+
+---
 
 ## Tests
 
 ```bash
-npm test        # capa de persistencia (rapido, sin navegador)
-npm run e2e     # end-to-end con Cypress
-npm run e2e:open # Cypress en modo interactivo
+npm test              # capa de persistencia — rápido, sin navegador
+npm run e2e           # end-to-end con Cypress (headless)
+npm run e2e:open      # Cypress en modo interactivo
 ```
 
-Las specs E2E cubren el badge de no leidos (`badge-no-leidos.cy.js`), el cifrado de punta
-a punta (`cifrado.cy.js`), los mensajes temporales (`temporales.cy.js`), el alta y
-moderacion de grupos (`grupos.cy.js`) y las invitaciones de contacto por link
-(`invitaciones.cy.js`).
+Los tests E2E corren contra bases descartables (`otpchat_test` y `otpchat_e2e`) que se crean y recrean vacías en cada corrida. No tocan la base de la app ni la de producción.
 
-`temporales.cy.js` tarda alrededor de un minuto: el temporizador mas corto de la app es de
-30s y hay un test que espera de verdad a que el mensaje se borre solo de la pantalla.
+> **Nota:** `temporales.cy.js` tarda ~1 minuto. El temporizador mínimo de la app es de 30 s y hay un test que espera a que el mensaje desaparezca en tiempo real.
 
-Ambos corren contra bases Postgres **descartables** (`otpchat_test` y `otpchat_e2e`), que
-se crean solas y se recrean vacias en cada corrida. Ninguna prueba toca la base de la app.
+---
 
-Esto no es automatico: el `.env` apunta a produccion via `DATABASE_URL`, y en `store.js`
-esa variable gana sobre `PGDATABASE`. `scripts/test-env.mjs` la deja vacia antes de que se
-cargue `dotenv` y ademas rechaza cualquier nombre de base que no sea `otpchat_<algo>`.
+## Deploy en la nube
 
-Los tests E2E levantan el backend con `RATE_LIMIT_ENABLED=false`, porque con el limite real
-de 3 registros por hora no se puede automatizar ningun alta. En produccion el flag no se
-setea y los limitadores quedan activos.
+Guía completa paso a paso: [DEPLOYMENT.md](DEPLOYMENT.md)
 
-## Features implementadas
+Resumen del stack recomendado:
 
-- Registro/login con bcrypt 12 rondas, JWT 7 días y refresh token rotativo por dispositivo.
-- Fingerprint cliente con Canvas, WebGL, audio, fuentes, sistema y hash SHA-256.
-- Cooldown de registro por IP/fingerprint y una cuenta por dispositivo.
-- Invitaciones por QR para contactos y grupos, con expiración/cancelación.
-- Chat 1 a 1 y grupal por WebSocket.
-- Cifrado cliente AES-256-GCM, clave derivada con PBKDF2 desde OTP TOTP + secreto del chat.
-- TOTP RFC 6238 en Web Crypto, indicador visual y estados naranja/rojo.
-- Historial limitado a 300 mensajes, fechas separadoras, auto-scroll y badges/toasts.
-- Mensajes temporales por chat/grupo con countdown, desaparición local y limpieza server cada 30s.
-- Grupos con secreto OTP, invitación QR y rol admin básico para editar nombre/timer.
-- Panel `/admin` exclusivo para `sup3r4drm1n_3533`, stats, selección, borrado y reset de clave temporal.
-- Badges de mensajes no leidos por chat, contados en el servidor y con tope "+99".
-- PWA con manifest, service worker, icono y layout mobile/desktop.
+| Servicio | Rol |
+|---|---|
+| [Neon](https://neon.com) | PostgreSQL serverless |
+| [Render](https://render.com) | Backend Node.js |
+| [Vercel](https://vercel.com) | Frontend Angular (static) |
 
-## Producción
-
-Ver pasos completos en [DEPLOYMENT.md](DEPLOYMENT.md).
-
-Para Neon/Render podés usar:
+Variables clave en producción:
 
 ```env
 DATABASE_URL=postgresql://user:password@host:5432/otpchat
 PGSSL=true
+JWT_SECRET=<secreto largo y aleatorio>
+CLIENT_ORIGIN=<URL de Vercel>
+TYPEORM_SYNCHRONIZE=false
+NODE_ENV=production
 ```
 
-En producción conviene cambiar `TYPEORM_SYNCHRONIZE=false` y pasar a migraciones versionadas.
+En producción conviene cambiar `TYPEORM_SYNCHRONIZE=false` y gestionar el esquema con migraciones versionadas.
+
+---
+
+## Licencia
+
+MIT
