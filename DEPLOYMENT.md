@@ -30,12 +30,22 @@ PGSSL=true
 JWT_SECRET=<long random secret>
 CLIENT_ORIGIN=<your Vercel production URL>
 TYPEORM_SYNCHRONIZE=true
-SUPERADMIN_USERNAME=<usuario de una cuenta que ya registraste>
+SUPERADMIN_USERNAME=<nombre de usuario del admin>
+SUPERADMIN_PASSWORD=<clave inicial del admin>
 REGISTER_COOLDOWN_ENABLED=false
 DEVICE_ACCOUNT_LIMIT_ENABLED=false
 ```
 
-**Sobre `SUPERADMIN_USERNAME`.** El panel `/admin` ya no se otorga por tener un nombre magico: en cada arranque el servidor marca como superadmin unicamente a la cuenta que nombra esta variable, y ese nombre queda reservado (nadie mas puede registrarlo ni renombrarse a el). Para habilitar el panel: registra una cuenta normal, pone su usuario en `SUPERADMIN_USERNAME` y redeploya. Si la dejas sin setear, el sistema arranca sin ningun superadmin (fail closed), que es lo mas seguro si no necesitas el panel.
+**Sobre el superadmin.** El panel `/admin` ya no se otorga por tener un nombre magico. El nombre que pongas en `SUPERADMIN_USERNAME` queda **reservado** (nadie puede registrarlo ni renombrarse a el), asi que la cuenta admin **no se crea por el registro normal**: la crea el servidor en el arranque a partir de `SUPERADMIN_PASSWORD`.
+
+Para habilitar el panel:
+
+1. Pone `SUPERADMIN_USERNAME` (el nombre que quieras) y `SUPERADMIN_PASSWORD` (una clave inicial) en el entorno.
+2. Redeploya. En el arranque, si esa cuenta no existe, el servidor la crea con esa clave.
+3. Entra con ese usuario y clave. En el primer login te va a pedir **cambiar la contrasena** (la de env puede quedar registrada en logs o el dashboard del hosting).
+4. Una vez creada, `SUPERADMIN_PASSWORD` ya no hace nada; podes borrarla del entorno.
+
+Si dejas `SUPERADMIN_PASSWORD` sin setear y la cuenta no existe, el sistema arranca **sin ningun superadmin** (fail closed), que es lo mas seguro si no necesitas el panel.
 
 Render provides `PORT` automatically. Do not hardcode it in Render.
 

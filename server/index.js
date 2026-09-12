@@ -132,6 +132,29 @@ function isReservedName(username) {
 // basarse solo en config de confianza, corrige cualquier fila que quedara con el flag mal
 // puesto (por datos viejos o por un intento de escalada previo).
 async function seedSuperadmin() {
+  const existe = state().users.some((u) => u.username.toLowerCase() === superadminName.toLowerCase());
+  const bootstrapPassword = process.env.SUPERADMIN_PASSWORD || '';
+
+  // El nombre del admin esta reservado, asi que no se puede dar de alta por el registro
+  // normal (es lo que impide la escalada). La unica via de alta es esta: si la cuenta no
+  // existe y hay una password de bootstrap en env (config de confianza), la crea el propio
+  // servidor. Se fuerza el cambio de clave en el primer login, porque una password puesta
+  // por env puede quedar registrada en los logs o el dashboard del hosting.
+  if (!existe && bootstrapPassword) {
+    state().users.push({
+      id: makeId('usr'),
+      username: superadminName,
+      passwordHash: await bcrypt.hash(bootstrapPassword, 12),
+      deviceFingerprint: 'server-seed',
+      mustChangePassword: true,
+      isSuperadmin: false,
+      createdAt: nowIso(),
+      lastSeenAt: nowIso()
+    });
+    console.log(`Superadmin "${superadminName}" creado desde SUPERADMIN_PASSWORD. Cambia la clave en el primer login.`);
+  }
+
+  // Re-asienta el flag: solo la cuenta designada queda como superadmin, el resto en false.
   let cambios = false;
   for (const user of state().users) {
     const deberia = user.username.toLowerCase() === superadminName.toLowerCase();
@@ -861,4 +884,4 @@ server.listen(port, () => console.log(`OTPChat API on http://localhost:${port}`)
 
 // Exportados para que los tests de API puedan cerrar el proceso: el listen y el interval
 // dejan el event loop vivo y sin esto "node --test" nunca termina.
-export { server, wss, cleanupTimer };
+export { server, wss, cleanupTimer, seedSuperadmin };

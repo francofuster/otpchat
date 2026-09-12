@@ -269,3 +269,32 @@ test('el other de un contacto tampoco expone el fingerprint', async () => {
   const boot = await api('/api/bootstrap', { token: a.token });
   assert.equal(boot.body.contacts[0].other.deviceFingerprint, undefined);
 });
+
+// ── Bootstrap del superadmin desde env (la cuenta se crea sola, no por registro) ──
+
+test('el superadmin se siembra desde SUPERADMIN_PASSWORD cuando la cuenta no existe', async () => {
+  // beforeEach dejo las tablas vacias: re-corre la siembra como en el arranque.
+  await backend.seedSuperadmin();
+
+  // Su nombre esta reservado, asi que no se puede registrar por el flujo normal.
+  const registro = await api('/api/auth/register', {
+    method: 'POST',
+    body: { username: 'admintest', password: 'Abcdef1!', fingerprint: 'fp-x' }
+  });
+  assert.equal(registro.status, 409);
+
+  // Pero la cuenta sembrada existe, es admin y pide cambiar la clave en el primer login.
+  const login = await api('/api/auth/login', { method: 'POST', body: { username: 'admintest', password: 'AdminBoot1!', fingerprint: 'fp-x' } });
+  assert.equal(login.status, 200);
+  assert.equal(login.body.user.isSuperadmin, true);
+  assert.equal(login.body.user.mustChangePassword, true);
+  assert.equal((await api('/api/admin/stats', { token: login.body.token })).status, 200);
+});
+
+test('sembrar es idempotente: no duplica la cuenta ni se la da a otro', async () => {
+  await backend.seedSuperadmin();
+  await backend.seedSuperadmin();
+  const admins = state().users.filter((u) => u.isSuperadmin);
+  assert.equal(admins.length, 1);
+  assert.equal(admins[0].username, 'admintest');
+});

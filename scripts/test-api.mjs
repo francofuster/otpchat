@@ -5,6 +5,9 @@ import { usarBaseDescartable } from './test-env.mjs';
 
 const database = usarBaseDescartable('otpchat_api');
 process.env.RATE_LIMIT_ENABLED = 'false';
+// Admin designado por env: nombre reservado + password de bootstrap para sembrarlo.
+process.env.SUPERADMIN_USERNAME = 'admintest';
+process.env.SUPERADMIN_PASSWORD = 'AdminBoot1!';
 process.env.PORT = process.env.API_TEST_PORT || '4955';
 // Chico a proposito: el test de payload grande manda unos pocos KB en vez de megas.
 process.env.MAX_AUDIO_BYTES = '4096';

@@ -197,7 +197,8 @@ JWT_SECRET=<secreto largo y aleatorio>
 CLIENT_ORIGIN=<URL de Vercel>
 TYPEORM_SYNCHRONIZE=false
 NODE_ENV=production
-SUPERADMIN_USERNAME=<cuenta que sera admin>   # opcional; sin esto no hay panel /admin
+SUPERADMIN_USERNAME=<nombre del admin>          # opcional; sin esto no hay panel /admin
+SUPERADMIN_PASSWORD=<clave inicial del admin>   # el server crea la cuenta admin en el arranque
 ```
 
 En producción conviene cambiar `TYPEORM_SYNCHRONIZE=false` y gestionar el esquema con migraciones versionadas.
