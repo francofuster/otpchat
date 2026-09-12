@@ -83,6 +83,44 @@ describe('chat cifrado', () => {
     });
   });
 
+  // Al recargar, el control de rotacion vuelve del servidor con una version que YA
+  // tenemos guardada. Ese camino se saltea el guardado, pero igual tiene que mostrar el
+  // aviso: antes caia al texto crudo y la burbuja publicaba el secreto del chat.
+  it('al recargar, el aviso de clave renovada no filtra el JSON con el secreto', () => {
+    cy.abrirChatCifrado().then(({ anfitrion, conversationId }) => {
+      cy.abrirAcciones();
+      cy.contains('.sheet button', 'Renovar clave').click();
+      cy.contains('.bubble p', 'Clave del chat renovada').should('be.visible');
+
+      cy.window().then((win) => {
+        const guardado = JSON.parse(win.localStorage.getItem(`otpchat_secret:contact:${conversationId}`));
+        const secreto = guardado.versions[String(guardado.currentVersion)];
+        expect(guardado.currentVersion, 'la rotacion dejo la version 2').to.equal(2);
+        expect(secreto, 'el secreto nuevo quedo guardado').to.be.a('string').and.not.be.empty;
+
+        // Con el refresh se pierde la burbuja optimista: este texto sale de descifrar el
+        // mensaje de control guardado en el servidor.
+        cy.reload();
+        cy.get('.sidebar', { timeout: 15000 }).should('be.visible');
+        cy.contains('.item', anfitrion).click();
+        cy.contains('.bubble p', 'Clave del chat renovada').should('be.visible');
+
+        cy.get('.messages').should('not.contain', 'otpchatControl');
+        cy.get('.messages').should('not.contain', 'key-rotation');
+        cy.get('.messages').invoke('text').should((texto) => {
+          expect(texto, 'el secreto del chat no se renderiza nunca').to.not.include(secreto);
+        });
+
+        // El guard anti-downgrade sigue en pie: volver a leer el mismo control no reescribe nada.
+        cy.window().then((despues) => {
+          const relectura = JSON.parse(despues.localStorage.getItem(`otpchat_secret:contact:${conversationId}`));
+          expect(relectura.currentVersion, 'la version no se movio').to.equal(2);
+          expect(relectura.versions['2'], 'el secreto de la version 2 no se reescribio').to.equal(secreto);
+        });
+      });
+    });
+  });
+
   it('despues de renovar, los mensajes nuevos usan la version siguiente', () => {
     const antes = 'antes de rotar';
     const despues = 'despues de rotar';
