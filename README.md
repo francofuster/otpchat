@@ -27,13 +27,30 @@ AES-256-GCM encripta         WebSocket retransmite            AES-256-GCM desenc
 ### Características
 
 - **Chat 1 a 1 y grupal** por WebSocket con historial limitado a 300 mensajes
+- **Mensajes de audio** grabados en el navegador, cifrados igual que el texto
 - **TOTP visual** con indicador naranja/rojo cuando el código está por vencer
 - **Mensajes temporales** con countdown y limpieza automática server-side cada 30 s
+- **Permiso de escritura por grupo**: el admin principal puede dejar que solo admins y subadmins envíen mensajes
 - **Invitaciones por QR** para contactos y grupos, con expiración y cancelación
 - **Fingerprint de dispositivo** con Canvas, WebGL, audio y fuentes + hash SHA-256
 - **Badges de no leídos** por chat, contados en el servidor, con tope "+99"
 - **Panel `/admin`** con stats, selección y borrado de cuentas (acceso por nombre reservado)
 - **PWA** con manifest, service worker e ícono — instalable en mobile y desktop
+
+### Reglas de mensajes
+
+**Quién puede escribir en un grupo.** Por defecto escriben todos. El admin principal puede destildar "Los miembros pueden escribir" en las opciones del grupo: a partir de ahí solo él y los subadmins envían mensajes, y al resto se le reemplaza el campo de texto por un aviso. El permiso se decide en el servidor, así que un miembro silenciado recibe `403` aunque arme el `POST` a mano.
+
+**Cuánto vive un audio.** Los audios nunca quedan para siempre:
+
+| Temporizador del chat | Vencimiento del audio |
+|---|---|
+| Desactivado | 1 día |
+| Activado | lo que se haya seteado (30 s … 7 días) |
+
+Lo calcula el servidor con el temporizador de quien graba, y `cleanupExpiredMessages` los borra cada 30 s igual que a los mensajes temporales.
+
+**Cifrado.** Los audios usan la misma clave y el mismo paso OTP que el texto — se cifran como bytes, sin pasar por UTF-8. El servidor guarda `iv`, `salt` y el ciphertext opaco; en claro solo quedan la duración y el mime type, que el tamaño del ciphertext ya insinúa.
 
 ---
 
@@ -73,6 +90,8 @@ JWT_SECRET=cambia_esto_en_produccion
 REGISTER_COOLDOWN_ENABLED=false
 DEVICE_ACCOUNT_LIMIT_ENABLED=false
 ```
+
+Opcional: `MAX_AUDIO_BYTES` (por defecto `3145728`) es el tope del audio cifrado que acepta `/api/messages`. Un audio más grande se rechaza con `413`.
 
 Con `PG_CREATE_DATABASE=true` el backend crea la base `otpchat` automáticamente si el usuario de Postgres tiene permiso `CREATE DATABASE`. Si preferís crearla a mano:
 
@@ -142,12 +161,16 @@ public/config.js        ← URL del API, generada en build time
 ## Tests
 
 ```bash
-npm test              # capa de persistencia — rápido, sin navegador
+npm test              # persistencia + API — rápido, sin navegador
+npm run test:store    # solo la capa de persistencia
+npm run test:api      # solo los endpoints (permisos de grupo, TTL de audios)
 npm run e2e           # end-to-end con Cypress (headless)
 npm run e2e:open      # Cypress en modo interactivo
 ```
 
-Los tests E2E corren contra bases descartables (`otpchat_test` y `otpchat_e2e`) que se crean y recrean vacías en cada corrida. No tocan la base de la app ni la de producción.
+Todos corren contra bases descartables (`otpchat_test`, `otpchat_api` y `otpchat_e2e`) que se crean y recrean vacías en cada corrida. No tocan la base de la app ni la de producción.
+
+> **Ojo al levantar el server a mano:** el `.env` apunta a producción vía `DATABASE_URL`, y en `store.js` esa variable le gana a `PGDATABASE`. `scripts/test-env.mjs` la neutraliza antes de que cargue `dotenv` y rechaza cualquier nombre de base que no sea `otpchat_<algo>`. Usá ese helper — exportar `PGDATABASE` por tu cuenta **no alcanza** (y en PowerShell `$env:DATABASE_URL = ""` borra la variable en vez de vaciarla, así que `dotenv` vuelve a cargar la de producción).
 
 > **Nota:** `temporales.cy.js` tarda ~1 minuto. El temporizador mínimo de la app es de 30 s y hay un test que espera a que el mensaje desaparezca en tiempo real.
 

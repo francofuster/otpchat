@@ -51,16 +51,34 @@ export class CryptoService {
   }
 
   async decrypt(payload: EncryptedPayload, secret: string): Promise<string> {
+    const clear = await this.decryptBytes(payload, secret);
+    return clear ? dec.decode(clear) : '[No se pudo descifrar]';
+  }
+
+  // Los audios se cifran con la misma clave y el mismo paso OTP que el texto: lo unico
+  // que cambia es que entran y salen como bytes, sin pasar por UTF-8.
+  async encryptBytes(bytes: Uint8Array, secret: string, keyVersion = 1): Promise<EncryptedPayload> {
+    const subtle = subtleCrypto();
+    if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const keyStep = this.currentStep();
+    const key = await this.deriveKey(await this.sharedSecret(secret, keyStep), salt);
+    const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes);
+    return { iv: this.b64(iv), salt: this.b64(salt), ciphertext: this.b64(new Uint8Array(ciphertext)), keyStep, keyVersion };
+  }
+
+  async decryptBytes(payload: EncryptedPayload, secret: string): Promise<Uint8Array | null> {
     try {
+      const subtle = subtleCrypto();
+      if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
       const iv = this.fromB64(payload.iv);
       const salt = this.fromB64(payload.salt);
       const key = await this.deriveKey(await this.sharedSecret(secret, payload.keyStep), salt);
-      const subtle = subtleCrypto();
-      if (!subtle) throw new Error('Web Crypto requiere HTTPS o localhost');
       const clear = await subtle.decrypt({ name: 'AES-GCM', iv }, key, this.fromB64(payload.ciphertext));
-      return dec.decode(clear);
+      return new Uint8Array(clear);
     } catch {
-      return '[No se pudo descifrar]';
+      return null;
     }
   }
 
@@ -124,8 +142,14 @@ export class CryptoService {
     return result;
   }
 
+  // Por bloques y no con spread: un audio cifrado son cientos de miles de bytes y
+  // String.fromCharCode(...bytes) se lleva puesto el call stack a ese tamano.
   private b64(bytes: Uint8Array): string {
-    return btoa(String.fromCharCode(...bytes));
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+      out += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return btoa(out);
   }
 
   private fromB64(value: string): Uint8Array {

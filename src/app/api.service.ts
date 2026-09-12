@@ -96,6 +96,10 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ message: ChatMessage }>(apiUrl('/api/messages'), { scope, targetId, encrypted }));
   }
 
+  sendAudio(scope: 'contact' | 'group', targetId: string, encrypted: any, durationMs: number, mimeType: string) {
+    return firstValueFrom(this.http.post<{ message: ChatMessage }>(apiUrl('/api/messages'), { scope, targetId, encrypted, kind: 'audio', durationMs, mimeType }));
+  }
+
   pushPublicKey() {
     return firstValueFrom(this.http.get<{ publicKey: string }>(apiUrl('/api/push/public-key')));
   }

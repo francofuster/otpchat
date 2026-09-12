@@ -9,6 +9,9 @@ import { SecretService } from './secret.service';
 import { ChatMessage, Contact, Group, GroupMember } from './types';
 
 const timers = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
+// Tope de grabacion. Acota el payload cifrado que viaja en el JSON del POST.
+const maxRecordingMs = 120_000;
+const minRecordingMs = 700;
 
 @Component({
   selector: 'app-shell',
@@ -43,7 +46,12 @@ export class ShellComponent implements OnInit {
   groups = signal<Group[]>([]);
   messages = signal<ChatMessage[]>([]);
   showJumpToLatest = signal(false);
-  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string } | null>(null);
+  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string; membersCanWrite?: boolean } | null>(null);
+  recording = signal(false);
+  recordingMs = signal(0);
+  sendingAudio = signal(false);
+  playingId = signal<string | null>(null);
+  playbackPosition = signal(0);
   draft = '';
   panel: 'list' | 'chat' = 'list';
   sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | 'settings' | null>(null);
@@ -59,6 +67,19 @@ export class ShellComponent implements OnInit {
   tempPassword = signal('');
   timers = timers;
   isAdminRoute = computed(() => location.hash.includes('/admin'));
+  private audioUrls = new Map<string, string>();
+  private player?: HTMLAudioElement;
+  private recorder?: MediaRecorder;
+  private recorderStream?: MediaStream;
+  private recorderChunks: Blob[] = [];
+  private recordingTimer?: ReturnType<typeof setInterval>;
+  private recordingStartedAt = 0;
+  private recordedMs = 0;
+  private recordingCancelled = false;
+  // El chat al que apuntaba la grabacion cuando arranco. MediaRecorder entrega el blob en
+  // onstop, un rato despues del click: sin esto, cambiar de chat en ese intervalo mandaria
+  // el audio a la conversacion equivocada.
+  private recordingChat?: { scope: 'contact' | 'group'; id: string; secret: string; keyVersion: number };
 
   constructor(
     public auth: AuthService,
@@ -176,7 +197,7 @@ export class ShellComponent implements OnInit {
 
   async openGroup(group: Group) {
     const secret = this.secrets.get('group', group.id);
-    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || group.keyVersion || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId, joinedAt: group.joinedAt });
+    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || group.keyVersion || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId, joinedAt: group.joinedAt, membersCanWrite: group.membersCanWrite !== false });
     await this.loadMessages();
     this.panel = 'chat';
   }
@@ -186,15 +207,25 @@ export class ShellComponent implements OnInit {
     if (!chat) return;
     const res = await this.api.messages(chat.scope, chat.id);
     const decrypted: ChatMessage[] = [];
-    for (const m of res.messages) {
-      const secret = this.secrets.getVersion(chat.scope, chat.id, m.encrypted.keyVersion || 1) || chat.secret;
-      const text = secret ? await this.crypto.decrypt(m.encrypted, secret) : '[Falta la llave local para descifrar]';
-      decrypted.push({ ...m, text: this.applyKeyRotation(chat.scope, chat.id, text) });
-    }
+    for (const m of res.messages) decrypted.push(await this.decryptMessage(chat, m));
+    this.releaseAudio(new Set(decrypted.map((m) => m.id)));
     this.messages.set(decrypted);
     this.badge.update((b) => ({ ...b, [chat.id]: 0 }));
     void this.markRead(chat.scope, chat.id);
     setTimeout(() => this.scrollBottom(), 40);
+  }
+
+  // Unico punto donde se descifra un mensaje entrante, venga del historial o del socket.
+  // Los audios salen como bytes y quedan cacheados como blob URL para el player.
+  private async decryptMessage(chat: { scope: 'contact' | 'group'; id: string; secret: string }, message: ChatMessage): Promise<ChatMessage> {
+    const secret = this.secrets.getVersion(chat.scope, chat.id, message.encrypted.keyVersion || 1) || chat.secret;
+    if (message.kind === 'audio') {
+      const bytes = secret ? await this.crypto.decryptBytes(message.encrypted, secret) : null;
+      if (bytes) this.cacheAudio(message, bytes);
+      return { ...message, text: bytes ? '' : '[No se pudo descifrar el audio]' };
+    }
+    const text = secret ? await this.crypto.decrypt(message.encrypted, secret) : '[Falta la llave local para descifrar]';
+    return { ...message, text: this.applyKeyRotation(chat.scope, chat.id, text) };
   }
 
   badgeLabel(count: number) {
@@ -214,6 +245,10 @@ export class ShellComponent implements OnInit {
   async send() {
     const chat = this.selected();
     if (!chat || !this.draft.trim()) return;
+    if (!this.canWriteCurrentChat()) {
+      this.api.toast('Solo administradores pueden enviar mensajes');
+      return;
+    }
     if (!chat.secret) {
       this.api.toast('Falta la llave local de este chat. Necesitas una nueva invitacion segura.');
       return;
@@ -225,6 +260,231 @@ export class ShellComponent implements OnInit {
     const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text };
     this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
     setTimeout(() => this.scrollBottom(), 40);
+  }
+
+  // Un miembro silenciado no ve el campo de texto, pero el permiso real lo decide el
+  // servidor en cada POST: esto es solo para no mostrarle una caja que va a rebotar.
+  canWriteCurrentChat() {
+    const chat = this.selected();
+    if (!chat) return false;
+    if (chat.scope !== 'group') return true;
+    if (chat.membersCanWrite !== false) return true;
+    return this.canModerateChat(chat);
+  }
+
+  async toggleGroupWrite(allow: boolean) {
+    const chat = this.selected();
+    if (chat?.scope !== 'group' || !this.isGroupOwner(chat)) return;
+    try {
+      await this.api.updateGroup(chat.id, { membersCanWrite: allow });
+      this.selected.set({ ...chat, membersCanWrite: allow });
+      this.groups.update((items) => items.map((group) => group.id === chat.id ? { ...group, membersCanWrite: allow } : group));
+      this.api.toast(allow ? 'Todos pueden escribir en el grupo' : 'Solo administradores pueden escribir');
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo cambiar el permiso');
+    }
+  }
+
+  async startRecording() {
+    const chat = this.selected();
+    if (!chat || this.recording() || this.sendingAudio()) return;
+    if (!this.canWriteCurrentChat()) {
+      this.api.toast('Solo administradores pueden enviar mensajes');
+      return;
+    }
+    if (!chat.secret) {
+      this.api.toast('Falta la llave local de este chat. Necesitas una nueva invitacion segura.');
+      return;
+    }
+    if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      this.api.toast('Grabar audio requiere HTTPS y un navegador compatible.');
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      this.api.toast('Sin permiso para usar el microfono.');
+      return;
+    }
+    const mimeType = this.recorderMimeType();
+    this.recorderStream = stream;
+    this.recorderChunks = [];
+    this.recordingCancelled = false;
+    this.recordingChat = { scope: chat.scope, id: chat.id, secret: chat.secret, keyVersion: chat.keyVersion };
+    this.recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 24000 });
+    this.recorder.ondataavailable = (event) => { if (event.data.size) this.recorderChunks.push(event.data); };
+    this.recorder.onstop = () => void this.finishRecording();
+    this.recorder.start();
+    this.recordingStartedAt = Date.now();
+    this.recordedMs = 0;
+    this.recordingMs.set(0);
+    this.recording.set(true);
+    this.recordingTimer = setInterval(() => {
+      const elapsed = Date.now() - this.recordingStartedAt;
+      this.recordingMs.set(elapsed);
+      if (elapsed >= maxRecordingMs) this.stopRecording();
+    }, 200);
+  }
+
+  stopRecording() {
+    if (!this.recording()) return;
+    this.recordedMs = Date.now() - this.recordingStartedAt;
+    this.recording.set(false);
+    clearInterval(this.recordingTimer);
+    this.recordingTimer = undefined;
+    if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
+  }
+
+  cancelRecording() {
+    if (!this.recording()) return;
+    this.recordingCancelled = true;
+    this.stopRecording();
+  }
+
+  recordingLabel() {
+    return this.clock(this.recordingMs());
+  }
+
+  recordingProgress() {
+    return Math.min(100, (this.recordingMs() / maxRecordingMs) * 100);
+  }
+
+  async toggleAudio(message: ChatMessage) {
+    const url = this.audioUrls.get(message.id);
+    if (!url) {
+      this.api.toast('Este audio no se puede reproducir en este dispositivo.');
+      return;
+    }
+    const player = this.ensurePlayer();
+    if (this.playingId() === message.id) {
+      player.pause();
+      return;
+    }
+    if (player.src !== url) {
+      player.src = url;
+      player.currentTime = 0;
+    }
+    this.playingId.set(message.id);
+    this.playbackPosition.set(player.currentTime * 1000);
+    try {
+      await player.play();
+    } catch {
+      this.playingId.set(null);
+      this.api.toast('No se pudo reproducir el audio.');
+    }
+  }
+
+  hasAudio(message: ChatMessage) {
+    return this.audioUrls.has(message.id);
+  }
+
+  audioProgress(message: ChatMessage) {
+    if (this.playingId() !== message.id || !message.durationMs) return 0;
+    return Math.min(100, (this.playbackPosition() / message.durationMs) * 100);
+  }
+
+  audioTimeLabel(message: ChatMessage) {
+    const total = message.durationMs || 0;
+    if (this.playingId() !== message.id) return this.clock(total);
+    return this.clock(Math.min(this.playbackPosition(), total));
+  }
+
+  clock(ms: number) {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  private recorderMimeType() {
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+    return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
+  }
+
+  private async finishRecording() {
+    const chunks = this.recorderChunks;
+    const durationMs = this.recordedMs;
+    const mimeType = this.recorder?.mimeType || 'audio/webm';
+    const cancelled = this.recordingCancelled;
+    const chat = this.recordingChat;
+    this.releaseRecorder();
+    if (cancelled || !chunks.length || !chat) return;
+    if (durationMs < minRecordingMs) {
+      this.api.toast('Grabacion demasiado corta.');
+      return;
+    }
+    await this.sendAudio(chat, new Blob(chunks, { type: mimeType }), durationMs, mimeType);
+  }
+
+  private async sendAudio(chat: { scope: 'contact' | 'group'; id: string; secret: string; keyVersion: number }, blob: Blob, durationMs: number, mimeType: string) {
+    if (!chat.secret) return;
+    this.sendingAudio.set(true);
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const encrypted = await this.crypto.encryptBytes(bytes, chat.secret, chat.keyVersion);
+      const { message } = await this.api.sendAudio(chat.scope, chat.id, encrypted, durationMs, mimeType);
+      const optimistic: ChatMessage = { ...message, encrypted, sender: this.auth.user() || undefined, text: '' };
+      this.cacheAudio(optimistic, bytes);
+      // Si mientras tanto se cambio de chat, el audio ya viajo al correcto pero la burbuja
+      // optimista no va en pantalla: la trae loadMessages al volver.
+      if (this.selected()?.id !== chat.id) return;
+      this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
+      setTimeout(() => this.scrollBottom(), 40);
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo enviar el audio');
+    } finally {
+      this.sendingAudio.set(false);
+    }
+  }
+
+  private releaseRecorder() {
+    clearInterval(this.recordingTimer);
+    this.recordingTimer = undefined;
+    for (const track of this.recorderStream?.getTracks() || []) track.stop();
+    this.recorderStream = undefined;
+    this.recorder = undefined;
+    this.recorderChunks = [];
+    this.recordingChat = undefined;
+    this.recording.set(false);
+    this.recordingMs.set(0);
+  }
+
+  private ensurePlayer() {
+    if (this.player) return this.player;
+    const player = new Audio();
+    player.addEventListener('timeupdate', () => this.playbackPosition.set(player.currentTime * 1000));
+    player.addEventListener('ended', () => {
+      this.playingId.set(null);
+      this.playbackPosition.set(0);
+      player.currentTime = 0;
+    });
+    player.addEventListener('pause', () => { if (!player.ended) this.playingId.set(null); });
+    this.player = player;
+    return player;
+  }
+
+  private cacheAudio(message: ChatMessage, bytes: Uint8Array) {
+    const previous = this.audioUrls.get(message.id);
+    if (previous) URL.revokeObjectURL(previous);
+    const blob = new Blob([bytes], { type: message.mimeType || 'audio/webm' });
+    this.audioUrls.set(message.id, URL.createObjectURL(blob));
+  }
+
+  // El audio descifrado solo vive como blob URL en memoria. Cuando el mensaje se va
+  // (cambio de chat o venció) hay que revocarlo o el blob queda retenido.
+  private releaseAudio(keep?: Set<string>) {
+    for (const [id, url] of [...this.audioUrls]) {
+      if (keep?.has(id)) continue;
+      if (this.playingId() === id) this.stopPlayback();
+      URL.revokeObjectURL(url);
+      this.audioUrls.delete(id);
+    }
+  }
+
+  private stopPlayback() {
+    this.player?.pause();
+    if (this.player) this.player.src = '';
+    this.playingId.set(null);
+    this.playbackPosition.set(0);
   }
 
   keydown(event: KeyboardEvent) {
@@ -598,10 +858,8 @@ export class ShellComponent implements OnInit {
       if (!mine && !('PushManager' in window)) void this.notifyNewMessage();
       const chat = this.selected();
       if (chat && chat.id === event.message.targetId) {
-        const secret = this.secrets.getVersion(chat.scope, chat.id, event.message.encrypted.keyVersion || 1) || chat.secret;
-        const text = secret ? await this.crypto.decrypt(event.message.encrypted, secret) : '[Falta la llave local para descifrar]';
-        event.message.text = this.applyKeyRotation(chat.scope, chat.id, text);
-        this.messages.update((items) => items.some((item) => item.id === event.message.id) ? items : [...items, event.message]);
+        const decrypted = await this.decryptMessage(chat, event.message);
+        this.messages.update((items) => items.some((item) => item.id === decrypted.id) ? items : [...items, decrypted]);
         setTimeout(() => this.scrollBottom(), 40);
       }
       if (!mine && this.chatVisible(event.message.targetId)) {
@@ -617,7 +875,9 @@ export class ShellComponent implements OnInit {
   private pruneExpired() {
     const before = this.messages().length;
     this.messages.update((items) => items.filter((m) => !m.expiresAt || new Date(m.expiresAt).getTime() > Date.now()));
-    if (before !== this.messages().length) this.api.toast('Un mensaje temporal expiró');
+    if (before === this.messages().length) return;
+    this.releaseAudio(new Set(this.messages().map((m) => m.id)));
+    this.api.toast('Un mensaje temporal expiró');
   }
 
   scrollBottom() {
@@ -771,7 +1031,8 @@ export class ShellComponent implements OnInit {
       founderId: group.founderId,
       joinedAt: group.joinedAt,
       keyVersion: Math.max(chat.keyVersion, group.keyVersion || 1),
-      timerSeconds: group.timerSeconds
+      timerSeconds: group.timerSeconds,
+      membersCanWrite: group.membersCanWrite !== false
     });
   }
 }

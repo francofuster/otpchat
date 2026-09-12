@@ -68,6 +68,8 @@ export const GroupEntity = new EntitySchema({
     founderId: { type: 'varchar' },
     keyVersion: { type: 'integer', default: 1 },
     timerSeconds: { type: 'integer', default: 0 },
+    // En false solo admin y subadmin pueden enviar mensajes al grupo.
+    membersCanWrite: { type: 'boolean', default: true },
     createdAt: { type: 'text' }
   }
 });
@@ -94,6 +96,13 @@ export const MessageEntity = new EntitySchema({
     targetId: { type: 'varchar' },
     senderId: { type: 'varchar' },
     encrypted: { type: 'jsonb' },
+    // 'text' o 'audio'. El contenido va cifrado igual en los dos casos; esto solo dice
+    // como interpretar los bytes descifrados y que vencimiento aplicarle en el server.
+    kind: { type: 'varchar', default: 'text' },
+    // Metadata de reproduccion para los audios. No revela nada que el tamano del
+    // ciphertext no insinue ya, y permite dibujar el player antes de descifrar.
+    durationMs: { type: 'integer', nullable: true },
+    mimeType: { type: 'varchar', nullable: true },
     createdAt: { type: 'text' },
     expiresAt: textDate
   },

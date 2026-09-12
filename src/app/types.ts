@@ -24,6 +24,7 @@ export interface Group {
   keyVersion: number;
   joinedAt?: string;
   timerSeconds: number;
+  membersCanWrite: boolean;
   unreadCount?: number;
   role: 'admin' | 'subadmin' | 'member';
 }
@@ -44,6 +45,9 @@ export interface ChatMessage {
   senderId: string;
   sender?: User;
   encrypted: EncryptedPayload;
+  kind?: 'text' | 'audio';
+  durationMs?: number | null;
+  mimeType?: string | null;
   createdAt: string;
   expiresAt?: string | null;
   text?: string;

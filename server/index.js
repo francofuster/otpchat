@@ -37,6 +37,9 @@ const rateLimitEnabled = !['0', 'false', 'no', 'off'].includes(String(process.en
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.VAPID_SUBJECT || `mailto:admin@${new URL(clientOrigin).hostname}`;
+// Sin temporizador propio, un audio vive un dia y despues lo barre cleanupExpiredMessages.
+const audioMaxTtlSeconds = 24 * 60 * 60;
+const maxAudioBytes = Number(process.env.MAX_AUDIO_BYTES || 3 * 1024 * 1024);
 
 if (vapidPublicKey && vapidPrivateKey) {
   webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
@@ -48,6 +51,10 @@ function inviteLink(code) {
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: clientOrigin, credentials: true }));
+// Los audios cifrados viajan como base64 dentro del JSON, asi que /api/messages necesita
+// mas margen que el resto. Va primero a proposito: marca el body como parseado y el
+// parser global de 1mb lo saltea, de modo que ninguna otra ruta hereda el limite grande.
+app.use('/api/messages', express.json({ limit: `${maxAudioBytes * 2}b` }));
 app.use(express.json({ limit: '1mb' }));
 const sinLimite = (req, res, next) => next();
 const limiter = (options) => (rateLimitEnabled ? rateLimit(options) : sinLimite);
@@ -167,7 +174,12 @@ function groupRole(group, userId) {
 function groupPayload(group, userId) {
   if (!group) return null;
   const member = groupMember(group.id, userId);
-  return { ...group, keyVersion: group.keyVersion || 1, joinedAt: member?.joinedAt, timerSeconds: timerPreference(userId, 'group', group.id), role: groupRole(group, userId) };
+  return { ...group, keyVersion: group.keyVersion || 1, membersCanWrite: membersCanWrite(group), joinedAt: member?.joinedAt, timerSeconds: timerPreference(userId, 'group', group.id), role: groupRole(group, userId) };
+}
+
+// Las filas creadas antes de la columna llegan con null: solo false restringe el grupo.
+function membersCanWrite(group) {
+  return group?.membersCanWrite !== false;
 }
 
 function publicGroupMember(member) {
@@ -471,7 +483,7 @@ app.post('/api/invitations/:code/reject', auth, async (req, res) => {
 
 app.post('/api/groups', auth, async (req, res) => {
   const { name } = req.body || {};
-  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, keyVersion: 1, timerSeconds: 0, createdAt: nowIso() };
+  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, keyVersion: 1, timerSeconds: 0, membersCanWrite: true, createdAt: nowIso() };
   await mutate((db) => {
     db.groups.push(group);
     db.groupMembers.push({ groupId: group.id, userId: req.user.id, role: 'admin', joinedAt: nowIso() });
@@ -540,6 +552,9 @@ app.patch('/api/groups/:id', auth, async (req, res) => {
   await mutate(() => {
     if (req.body?.name) group.name = req.body.name;
     if (req.body?.timerSeconds !== undefined) group.timerSeconds = Number(req.body.timerSeconds || 0);
+    // Solo el admin principal llega hasta aca, asi que el candado del grupo se abre y
+    // cierra desde el mismo lugar que el nombre y el temporizador.
+    if (req.body?.membersCanWrite !== undefined) group.membersCanWrite = req.body.membersCanWrite !== false;
   });
   sendToGroup(group.id, { type: 'group:updated', group });
   res.json({ group });
@@ -673,6 +688,16 @@ function canAccessChat(userId, scope, targetId) {
   return false;
 }
 
+// El front esconde el campo de texto, pero el permiso se decide aca: es lo unico que un
+// miembro silenciado no puede saltear armando el POST a mano.
+function canWriteChat(userId, scope, targetId) {
+  if (scope !== 'group') return true;
+  const group = state().groups.find((g) => g.id === targetId);
+  if (!group) return false;
+  if (membersCanWrite(group)) return true;
+  return canModerate(groupRole(group, userId));
+}
+
 app.get('/api/messages/:scope/:id', auth, (req, res) => {
   const { scope, id } = req.params;
   if (!canAccessChat(req.user.id, scope, id)) return res.status(403).json({ error: 'Sin acceso' });
@@ -696,17 +721,28 @@ app.post('/api/messages/:scope/:id/read', auth, async (req, res) => {
 });
 
 app.post('/api/messages', auth, async (req, res) => {
-  const { scope, targetId, encrypted } = req.body || {};
+  const { scope, targetId, encrypted, durationMs, mimeType } = req.body || {};
   if (!canAccessChat(req.user.id, scope, targetId) || !encrypted?.ciphertext) return res.status(400).json({ error: 'Mensaje inválido' });
+  if (!canWriteChat(req.user.id, scope, targetId)) return res.status(403).json({ error: 'Solo administradores pueden enviar mensajes' });
+  const kind = req.body?.kind === 'audio' ? 'audio' : 'text';
+  if (kind === 'audio' && encrypted.ciphertext.length > maxAudioBytes) {
+    return res.status(413).json({ error: 'El audio es demasiado largo' });
+  }
   const timerSeconds = timerPreference(req.user.id, scope, targetId);
+  // Los audios nunca quedan para siempre: sin temporizador duran un dia, y con
+  // temporizador puesto mandan los segundos que eligio quien los graba.
+  const ttlSeconds = kind === 'audio' ? timerSeconds || audioMaxTtlSeconds : timerSeconds;
   const message = {
     id: makeId('msg'),
     scope,
     targetId,
     senderId: req.user.id,
     encrypted,
+    kind,
+    durationMs: kind === 'audio' ? Math.max(0, Math.round(Number(durationMs) || 0)) : null,
+    mimeType: kind === 'audio' ? String(mimeType || 'audio/webm').slice(0, 64) : null,
     createdAt: nowIso(),
-    expiresAt: timerSeconds ? new Date(Date.now() + timerSeconds * 1000).toISOString() : null
+    expiresAt: ttlSeconds ? new Date(Date.now() + ttlSeconds * 1000).toISOString() : null
   };
   await mutate((db) => db.messages.push(message));
   const event = { type: 'message:new', message: { ...message, sender: publicUser(req.user) } };
@@ -782,5 +818,9 @@ wss.on('connection', (ws, req) => {
 await loadStore();
 // Sin catch, un fallo de escritura aca queda como rechazo sin manejar y Node baja
 // el proceso entero. Preferimos loguear y seguir con el proximo tick.
-setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
+const cleanupTimer = setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
 server.listen(port, () => console.log(`OTPChat API on http://localhost:${port}`));
+
+// Exportados para que los tests de API puedan cerrar el proceso: el listen y el interval
+// dejan el event loop vivo y sin esto "node --test" nunca termina.
+export { server, wss, cleanupTimer };
