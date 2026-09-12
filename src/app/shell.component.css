@@ -85,13 +85,6 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
 .title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner { display: inline-block; margin-top: 3px; padding: 3px 7px; border-radius: 999px; background: #fff1b8; color: #6b4e00; font-size: 12px; }
 .chat-tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.otp { min-width: 116px; display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
-.otp > span { font-weight: 800; color: var(--blue-dark); }
-.otp div { height: 5px; background: #dfe8f5; border-radius: 999px; overflow: hidden; }
-.otp i { display: block; height: 100%; background: var(--ok); transition: width .3s linear; }
-.otp.warn i { background: #fb8500; }
-.otp.danger i { background: var(--danger); }
-.otp small { color: var(--muted); font-size: 11px; }
 .messages { overflow: auto; padding: 22px 22px 18px; scroll-behavior: smooth; }
 .date { width: max-content; margin: 14px auto; padding: 6px 12px; border-radius: 999px; background: color-mix(in srgb, var(--panel-glass) 78%, transparent); border: 1px solid var(--line); color: var(--muted); font-size: 12px; backdrop-filter: blur(14px); }
 .bubble { width: fit-content; max-width: min(640px, 78%); margin: 7px 0; padding: 9px 11px; background: var(--bubble-in); border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: 16px 16px 16px 5px; box-shadow: 0 10px 28px rgba(0,0,0,.14); backdrop-filter: blur(16px) saturate(1.12); animation: bubble-in .2s ease both; }
@@ -206,10 +199,6 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
   .chat-tools button { width: 32px; height: 34px; flex: 0 0 32px; padding: 0; background: transparent; color: var(--ink); box-shadow: none; }
   .chat-head select { width: 58px; max-width: 58px; min-width: 0; flex: 0 0 58px; height: 34px; padding: 0 2px; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel-glass) 62%, transparent); color: var(--ink); font-size: 11px; }
   .chat-head select option { color: var(--ink); background: var(--panel); }
-  .otp { min-width: 34px; flex: 0 0 34px; color: var(--ink); }
-  .otp > span { display: none; }
-  .otp small { color: var(--ink); }
-  .otp div { background: color-mix(in srgb, var(--line) 86%, transparent); }
   .messages { padding: 10px 8px 8px; }
   .bubble { max-width: 84%; font-size: 14px; }
   .bubble footer { font-size: 10px; }

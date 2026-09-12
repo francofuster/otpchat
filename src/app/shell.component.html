@@ -141,11 +141,6 @@
             @if (chat.timerSeconds) { <span class="banner">Tus mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
           </div>
           <div class="chat-tools">
-            <div class="otp" [class.warn]="crypto.secondsLeft() < 10" [class.danger]="crypto.secondsLeft() < 5">
-              <span>{{ crypto.otp() }}</span>
-              <div><i [style.width.%]="crypto.secondsLeft() / 30 * 100"></i></div>
-              <small>{{ crypto.secondsLeft() }}s</small>
-            </div>
             <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes">
               @for (t of timers; track t) { <option [value]="t">{{ timerLabel(t) }}</option> }
             </select>
