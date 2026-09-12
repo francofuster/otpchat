@@ -749,15 +749,15 @@ export class ShellComponent implements OnInit {
   async saveAccountPassword() {
     const errors = this.passwordErrors(this.accountPassword);
     if (errors.length) {
-      this.api.toast(`La contraseÃ±a debe tener ${errors.join(', ')}.`);
+      this.api.toast(`La contraseña debe tener ${errors.join(', ')}.`);
       return;
     }
     try {
       await this.auth.changePassword(this.accountPassword);
       this.accountPassword = '';
-      this.api.toast('ContraseÃ±a actualizada');
+      this.api.toast('Contraseña actualizada');
     } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseÃ±a');
+      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseña');
     }
   }
 
