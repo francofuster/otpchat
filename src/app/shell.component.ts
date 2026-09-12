@@ -929,27 +929,35 @@ export class ShellComponent implements OnInit {
     return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
   }
 
+  // El payload de este control lleva el secreto nuevo en claro, asi que en cuanto se
+  // reconoce como tal NUNCA se devuelve el texto crudo: todos los caminos salen por una
+  // etiqueta. Antes el guard de downgrade caia al return del texto y al recargar el
+  // historial (secreto ya guardado en esa version) la burbuja mostraba el JSON.
   private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string, senderId?: string): string {
+    let control: any;
     try {
-      const control = JSON.parse(text);
-      if (control?.otpchatControl !== 'key-rotation' || !control.secret || !control.version) return text;
-      // El emisor tiene que estar autorizado a rotar. En un grupo, solo el fundador: sin
-      // esto cualquier miembro cifraba este control con la clave actual y le imponia a todos
-      // un secreto elegido por el — que seguia conociendo aunque despues lo expulsaran.
-      if (!this.canRotateKey(scope, id, senderId)) return text;
-      const version = Number(control.version);
-      // Nunca aceptar un downgrade: solo versiones mas nuevas que la que ya tenemos.
-      const known = this.secrets.get(scope, id)?.version || 0;
-      if (version <= known) return text;
+      control = JSON.parse(text);
+    } catch {
+      return text;
+    }
+    if (control?.otpchatControl !== 'key-rotation' || !control.secret || !control.version) return text;
+    // El emisor tiene que estar autorizado a rotar. En un grupo, solo el fundador: sin
+    // esto cualquier miembro cifraba este control con la clave actual y le imponia a todos
+    // un secreto elegido por el — que seguia conociendo aunque despues lo expulsaran.
+    if (!this.canRotateKey(scope, id, senderId)) return '[Mensaje de control ignorado]';
+    const version = Number(control.version);
+    const known = this.secrets.get(scope, id)?.version || 0;
+    // Nunca aceptar un downgrade: solo se guarda una version mas nueva que la que ya
+    // tenemos. Volver a ver una version conocida es lo normal al recargar el historial,
+    // y ahi lo unico que se saltea es el guardado: el aviso se muestra igual.
+    if (version > known) {
       this.secrets.save(scope, id, control.secret, version);
       const chat = this.selected();
       if (chat?.scope === scope && chat.id === id && version > chat.keyVersion) {
         this.selected.set({ ...chat, secret: control.secret, keyVersion: version });
       }
-      return 'Clave del chat renovada';
-    } catch {
-      return text;
     }
+    return 'Clave del chat renovada';
   }
 
   // Contacto: cualquiera de los dos participantes. Grupo: unicamente el fundador, el mismo
