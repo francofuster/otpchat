@@ -30,9 +30,12 @@ PGSSL=true
 JWT_SECRET=<long random secret>
 CLIENT_ORIGIN=<your Vercel production URL>
 TYPEORM_SYNCHRONIZE=true
+SUPERADMIN_USERNAME=<usuario de una cuenta que ya registraste>
 REGISTER_COOLDOWN_ENABLED=false
 DEVICE_ACCOUNT_LIMIT_ENABLED=false
 ```
+
+**Sobre `SUPERADMIN_USERNAME`.** El panel `/admin` ya no se otorga por tener un nombre magico: en cada arranque el servidor marca como superadmin unicamente a la cuenta que nombra esta variable, y ese nombre queda reservado (nadie mas puede registrarlo ni renombrarse a el). Para habilitar el panel: registra una cuenta normal, pone su usuario en `SUPERADMIN_USERNAME` y redeploya. Si la dejas sin setear, el sistema arranca sin ningun superadmin (fail closed), que es lo mas seguro si no necesitas el panel.
 
 Render provides `PORT` automatically. Do not hardcode it in Render.
 

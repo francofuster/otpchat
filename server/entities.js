@@ -11,6 +11,10 @@ export const UserEntity = new EntitySchema({
     passwordHash: { type: 'text' },
     deviceFingerprint: { type: 'varchar' },
     mustChangePassword: { type: 'boolean', default: false },
+    // Privilegio de superadmin. NO se deriva del nombre de usuario (eso permitia que
+    // cualquiera se renombrara al nombre magico y escalara): se siembra en el arranque
+    // a partir de SUPERADMIN_USERNAME, que es config de confianza.
+    isSuperadmin: { type: 'boolean', default: false },
     createdAt: { type: 'text' },
     lastSeenAt: textDate
   }

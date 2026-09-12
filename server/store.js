@@ -204,16 +204,20 @@ export function makeId(prefix) {
   return `${prefix}_${nanoid(14)}`;
 }
 
-export function publicUser(user) {
+// `includeFingerprint` solo cuando el destinatario es el propio usuario (o el panel admin).
+// El deviceFingerprint es un identificador estable y rastreable del dispositivo: mandarlo
+// dentro de `sender`/`other` filtraba la huella de cada uno a sus contactos y grupos.
+export function publicUser(user, { includeFingerprint = false } = {}) {
   if (!user) return null;
   return {
     id: user.id,
     username: user.username,
     createdAt: user.createdAt,
     lastSeenAt: user.lastSeenAt,
-    deviceFingerprint: user.deviceFingerprint,
     mustChangePassword: user.mustChangePassword,
-    isSuperadmin: user.username === 'sup3r4drm1n_3533'
+    // Lee la columna sembrada en el arranque, no el nombre de usuario.
+    isSuperadmin: user.isSuperadmin === true,
+    ...(includeFingerprint ? { deviceFingerprint: user.deviceFingerprint } : {})
   };
 }
 

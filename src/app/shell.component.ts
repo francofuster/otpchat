@@ -225,7 +225,7 @@ export class ShellComponent implements OnInit {
       return { ...message, text: bytes ? '' : '[No se pudo descifrar el audio]' };
     }
     const text = secret ? await this.crypto.decrypt(message.encrypted, secret) : '[Falta la llave local para descifrar]';
-    return { ...message, text: this.applyKeyRotation(chat.scope, chat.id, text) };
+    return { ...message, text: this.applyKeyRotation(chat.scope, chat.id, text, message.senderId) };
   }
 
   badgeLabel(count: number) {
@@ -929,19 +929,35 @@ export class ShellComponent implements OnInit {
     return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
   }
 
-  private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string): string {
+  private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string, senderId?: string): string {
     try {
       const control = JSON.parse(text);
       if (control?.otpchatControl !== 'key-rotation' || !control.secret || !control.version) return text;
-      this.secrets.save(scope, id, control.secret, Number(control.version));
+      // El emisor tiene que estar autorizado a rotar. En un grupo, solo el fundador: sin
+      // esto cualquier miembro cifraba este control con la clave actual y le imponia a todos
+      // un secreto elegido por el — que seguia conociendo aunque despues lo expulsaran.
+      if (!this.canRotateKey(scope, id, senderId)) return text;
+      const version = Number(control.version);
+      // Nunca aceptar un downgrade: solo versiones mas nuevas que la que ya tenemos.
+      const known = this.secrets.get(scope, id)?.version || 0;
+      if (version <= known) return text;
+      this.secrets.save(scope, id, control.secret, version);
       const chat = this.selected();
-      if (chat?.scope === scope && chat.id === id && Number(control.version) > chat.keyVersion) {
-        this.selected.set({ ...chat, secret: control.secret, keyVersion: Number(control.version) });
+      if (chat?.scope === scope && chat.id === id && version > chat.keyVersion) {
+        this.selected.set({ ...chat, secret: control.secret, keyVersion: version });
       }
       return 'Clave del chat renovada';
     } catch {
       return text;
     }
+  }
+
+  // Contacto: cualquiera de los dos participantes. Grupo: unicamente el fundador, el mismo
+  // que del lado del servidor es el unico que puede subir keyVersion.
+  private canRotateKey(scope: 'contact' | 'group', id: string, senderId?: string): boolean {
+    if (!senderId) return false;
+    if (scope === 'contact') return id.split(':').includes(senderId);
+    return this.groups().find((g) => g.id === id)?.founderId === senderId;
   }
 
   private pendingInvite(): { code: string; key?: string; keyVersion?: number } | null {

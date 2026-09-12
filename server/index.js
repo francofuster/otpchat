@@ -27,7 +27,10 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const port = Number(process.env.PORT || 4900);
 const jwtSecret = process.env.JWT_SECRET || 'dev-otpchat-secret';
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5900';
-const superadminName = 'sup3r4drm1n_3533';
+// Config de confianza: quien tiene admin. Sin esta variable el nombre por defecto queda
+// reservado pero sin nadie que lo tenga, asi que el sistema arranca sin superadmin (fail
+// closed). Para habilitar admin, registra una cuenta normal y apunta esta env a ella.
+const superadminName = process.env.SUPERADMIN_USERNAME || 'sup3r4drm1n_3533';
 const online = new Map();
 const registerCooldownEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.REGISTER_COOLDOWN_ENABLED || '').toLowerCase());
 const deviceAccountLimitEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.DEVICE_ACCOUNT_LIMIT_ENABLED || '').toLowerCase());
@@ -113,8 +116,31 @@ function auth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.username !== superadminName) return res.status(403).json({ error: 'Solo superadmin' });
+  // Lee el flag sembrado, nunca el nombre de usuario.
+  if (req.user?.isSuperadmin !== true) return res.status(403).json({ error: 'Solo superadmin' });
   next();
+}
+
+// El nombre del superadmin esta reservado: nadie puede registrarlo ni renombrarse a el.
+// Es lo que cierra la escalada (antes cualquiera se renombraba al nombre magico y ganaba
+// admin). El propio admin ya lo tiene desde el arranque, asi que no necesita reclamarlo.
+function isReservedName(username) {
+  return String(username).toLowerCase() === superadminName.toLowerCase();
+}
+
+// Re-deriva isSuperadmin desde SUPERADMIN_USERNAME en cada arranque. Al ser idempotente y
+// basarse solo en config de confianza, corrige cualquier fila que quedara con el flag mal
+// puesto (por datos viejos o por un intento de escalada previo).
+async function seedSuperadmin() {
+  let cambios = false;
+  for (const user of state().users) {
+    const deberia = user.username.toLowerCase() === superadminName.toLowerCase();
+    if (user.isSuperadmin !== deberia) {
+      user.isSuperadmin = deberia;
+      cambios = true;
+    }
+  }
+  if (cambios) await mutate(() => {});
 }
 
 function sendToUser(userId, event) {
@@ -268,7 +294,7 @@ app.post('/api/auth/register', registerLimiter, async (req, res) => {
   if (passErrors.length) return res.status(400).json({ error: `La contraseña debe tener ${passErrors.join(', ')}` });
   const blockedUntil = registerCooldownEnabled ? registerBlocked(req.ip, fingerprint) : null;
   if (blockedUntil) return res.status(429).json({ error: 'Registro en cooldown', blockedUntil });
-  if (state().users.some((u) => u.username.toLowerCase() === String(username).toLowerCase())) {
+  if (isReservedName(username) || state().users.some((u) => u.username.toLowerCase() === String(username).toLowerCase())) {
     return res.status(409).json({ error: 'Usuario no disponible' });
   }
   if (deviceAccountLimitEnabled && state().users.some((u) => u.deviceFingerprint === fingerprint)) {
@@ -280,6 +306,7 @@ app.post('/api/auth/register', registerLimiter, async (req, res) => {
     passwordHash: await bcrypt.hash(password, 12),
     deviceFingerprint: fingerprint,
     mustChangePassword: false,
+    isSuperadmin: false,
     createdAt: nowIso(),
     lastSeenAt: nowIso()
   };
@@ -288,7 +315,7 @@ app.post('/api/auth/register', registerLimiter, async (req, res) => {
     db.users.push(user);
     db.securityEvents.push({ id: makeId('sec'), type: 'register', ip: req.ip, fingerprint, createdAt: nowIso() });
   });
-  res.json({ user: publicUser(user), token: sign(user), refreshToken });
+  res.json({ user: publicUser(user, { includeFingerprint: true }), token: sign(user), refreshToken });
 });
 
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
@@ -302,7 +329,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   }
   const refreshToken = issueSession(user, fingerprint || user.deviceFingerprint);
   await mutate(() => {});
-  res.json({ user: publicUser(user), token: sign(user), refreshToken });
+  res.json({ user: publicUser(user, { includeFingerprint: true }), token: sign(user), refreshToken });
 });
 
 app.post('/api/auth/refresh', async (req, res) => {
@@ -317,7 +344,7 @@ app.post('/api/auth/refresh', async (req, res) => {
     session.lastUsedAt = nowIso();
     session.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
   });
-  res.json({ user: publicUser(user), token: sign(user), refreshToken: nextRefresh });
+  res.json({ user: publicUser(user, { includeFingerprint: true }), token: sign(user), refreshToken: nextRefresh });
 });
 
 app.post('/api/auth/logout', auth, async (req, res) => {
@@ -336,10 +363,10 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
     req.user.passwordHash = bcrypt.hashSync(password, 12);
     req.user.mustChangePassword = false;
   });
-  res.json({ user: publicUser(req.user) });
+  res.json({ user: publicUser(req.user, { includeFingerprint: true }) });
 });
 
-app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user) }));
+app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user, { includeFingerprint: true }) }));
 
 app.get('/api/push/public-key', auth, (req, res) => {
   res.json({ publicKey: vapidPublicKey });
@@ -382,12 +409,14 @@ app.patch('/api/auth/username', auth, async (req, res) => {
   if (username.length < 3) return res.status(400).json({ error: 'El usuario debe tener al menos 3 caracteres' });
   if (username.length > 32) return res.status(400).json({ error: 'El usuario no puede superar 32 caracteres' });
   if (!/^[A-Za-z0-9_.-]+$/.test(username)) return res.status(400).json({ error: 'Usa solo letras, numeros, punto, guion o guion bajo' });
-  const taken = state().users.some((u) => u.id !== req.user.id && u.username.toLowerCase() === username.toLowerCase());
+  // Reservado salvo que ya sea el nombre del propio usuario (para no bloquear un no-op).
+  const claimingReserved = isReservedName(username) && req.user.username.toLowerCase() !== username.toLowerCase();
+  const taken = claimingReserved || state().users.some((u) => u.id !== req.user.id && u.username.toLowerCase() === username.toLowerCase());
   if (taken) return res.status(409).json({ error: 'Ese usuario ya existe' });
   await mutate(() => {
     req.user.username = username;
   });
-  res.json({ user: publicUser(req.user) });
+  res.json({ user: publicUser(req.user, { includeFingerprint: true }) });
 });
 
 app.get('/api/bootstrap', auth, (req, res) => {
@@ -610,6 +639,13 @@ app.delete('/api/groups/:id/members', auth, async (req, res) => {
   }
   await mutate((db) => {
     db.groupMembers = db.groupMembers.filter((m) => !(m.groupId === group.id && ids.has(m.userId)));
+    // Al expulsar se revocan las invitaciones pendientes del grupo. El link de invitacion
+    // lleva el secreto del grupo en el fragmento y no se marcaba como usado al aceptar, asi
+    // que un expulsado volvia a entrar con el mismo link que ya tenia. Revocarlas corta esa
+    // reentrada; el admin genera una nueva si sigue queriendo sumar gente.
+    for (const invitation of db.invitations.filter((i) => i.groupId === group.id && i.status === 'pending')) {
+      invitation.status = 'revoked';
+    }
   });
   for (const id of ids) sendToUser(id, { type: 'group:removed', groupId: group.id });
   sendToGroup(group.id, { type: 'group:members_updated', groupId: group.id });
@@ -767,7 +803,7 @@ app.get('/api/admin/stats', auth, requireAdmin, (req, res) => {
 
 app.get('/api/admin/users', auth, requireAdmin, (req, res) => {
   const users = state().users.map((u) => ({
-    ...publicUser(u),
+    ...publicUser(u, { includeFingerprint: true }),
     messages: state().messages.filter((m) => m.senderId === u.id).length,
     groups: state().groupMembers.filter((m) => m.userId === u.id).length
   }));
@@ -816,6 +852,8 @@ wss.on('connection', (ws, req) => {
 });
 
 await loadStore();
+// Re-asienta quien es superadmin desde la config antes de aceptar cualquier request.
+await seedSuperadmin();
 // Sin catch, un fallo de escritura aca queda como rechazo sin manejar y Node baja
 // el proceso entero. Preferimos loguear y seguir con el proximo tick.
 const cleanupTimer = setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
