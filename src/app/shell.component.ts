@@ -1,5 +1,5 @@
 import { CommonModule, DatePipe } from '@angular/common';
-import { Component, ElementRef, OnInit, ViewChild, computed, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild, computed, effect, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ApiService } from './api.service';
@@ -12,6 +12,9 @@ const timers = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
 // Tope de grabacion. Acota el payload cifrado que viaja en el JSON del POST.
 const maxRecordingMs = 120_000;
 const minRecordingMs = 700;
+// Cada cuanto se regenera el QR/link de invitacion mientras esta a la vista. El anterior se
+// cancela, asi un codigo filtrado deja de servir a los pocos segundos en vez de durar horas.
+const inviteRefreshMs = 30_000;
 
 @Component({
   selector: 'app-shell',
@@ -80,6 +83,12 @@ export class ShellComponent implements OnInit {
   // onstop, un rato despues del click: sin esto, cambiar de chat en ese intervalo mandaria
   // el audio a la conversacion equivocada.
   private recordingChat?: { scope: 'contact' | 'group'; id: string; secret: string; keyVersion: number };
+  // Contexto de la invitacion abierta, para poder regenerarla cada 30s. En contacto se reusa
+  // el mismo secreto durante toda la rotacion: asi cualquier codigo que el invitado alcance a
+  // escanear mapea a un secreto que el emisor tiene guardado localmente.
+  private inviteRefreshTimer?: ReturnType<typeof setInterval>;
+  private inviteContext: { scope: 'contact' } | { scope: 'group'; id: string; secret: string; keyVersion: number } | null = null;
+  private inviteSecret = '';
 
   constructor(
     public auth: AuthService,
@@ -87,7 +96,18 @@ export class ShellComponent implements OnInit {
     public api: ApiService,
     private secrets: SecretService,
     private router: Router
-  ) {}
+  ) {
+    // Arranca y corta la rotacion del QR segun este visible o no una invitacion. Cubre
+    // todas las formas de cerrar la hoja (X, click afuera, aceptacion), sin cablear cada una.
+    effect(() => {
+      const mostrandoInvite = (this.sheet() === 'contact' || this.sheet() === 'group') && !!this.invite();
+      if (mostrandoInvite && !this.inviteRefreshTimer) {
+        this.inviteRefreshTimer = setInterval(() => void this.refreshInvite(), inviteRefreshMs);
+      } else if (!mostrandoInvite && this.inviteRefreshTimer) {
+        this.stopInviteRotation();
+      }
+    });
+  }
 
   async ngOnInit() {
     this.applyTheme();
@@ -502,13 +522,10 @@ export class ShellComponent implements OnInit {
   }
 
   async createInvite() {
-    const secret = this.secrets.generate();
-    const invitation = (await this.api.createContactInvite()).invitation;
-    invitation.link = this.secrets.attachToInviteLink(invitation.link, secret, 1);
-    invitation.qr = await this.secrets.qrFor(invitation.link);
-    this.secrets.savePendingInvite(invitation.code, secret);
-    this.invite.set(invitation);
+    this.inviteContext = { scope: 'contact' };
+    this.inviteSecret = this.secrets.generate();
     this.sheet.set('contact');
+    await this.refreshInvite();
   }
 
   openGroupSheet() {
@@ -541,11 +558,50 @@ export class ShellComponent implements OnInit {
       this.api.toast('Falta la llave local del grupo en este dispositivo.');
       return;
     }
-    const invitation = (await this.api.createGroupInvite(chat.id)).invitation;
-    invitation.link = this.secrets.attachToInviteLink(invitation.link, chat.secret, chat.keyVersion);
-    invitation.qr = await this.secrets.qrFor(invitation.link);
-    this.invite.set(invitation);
+    this.inviteContext = { scope: 'group', id: chat.id, secret: chat.secret, keyVersion: chat.keyVersion };
     this.sheet.set('group');
+    await this.refreshInvite();
+  }
+
+  // Genera una invitacion nueva y cancela la anterior. La llama createInvite/groupInvite una
+  // vez, y despues el timer cada 30s mientras la hoja siga mostrando el QR.
+  private async refreshInvite() {
+    const ctx = this.inviteContext;
+    if (!ctx) return;
+    const previa = this.invite();
+    try {
+      let invitation: any;
+      if (ctx.scope === 'contact') {
+        invitation = (await this.api.createContactInvite()).invitation;
+        invitation.link = this.secrets.attachToInviteLink(invitation.link, this.inviteSecret, 1);
+        this.secrets.savePendingInvite(invitation.code, this.inviteSecret);
+      } else {
+        invitation = (await this.api.createGroupInvite(ctx.id)).invitation;
+        invitation.link = this.secrets.attachToInviteLink(invitation.link, ctx.secret, ctx.keyVersion);
+      }
+      invitation.qr = await this.secrets.qrFor(invitation.link);
+      // Recien cuando la nueva esta lista se muestra y se da de baja la vieja: si la creacion
+      // falla, el codigo anterior sigue vigente y visible.
+      this.invite.set(invitation);
+      if (previa?.code && previa.code !== invitation.code) this.invalidatePreviousInvite(previa.code);
+    } catch {
+      // Sin conexion se mantiene el QR actual; el proximo tick reintenta.
+    }
+  }
+
+  private invalidatePreviousInvite(code: string) {
+    this.secrets.consumePendingInvite(code);
+    void this.api.cancelInvite(code).catch(() => {});
+  }
+
+  private stopInviteRotation() {
+    clearInterval(this.inviteRefreshTimer);
+    this.inviteRefreshTimer = undefined;
+    // Al cerrar la hoja, el ultimo codigo mostrado se cancela para que no quede vivo su TTL.
+    const ultima = this.invite();
+    if (ultima?.code) this.invalidatePreviousInvite(ultima.code);
+    this.inviteContext = null;
+    this.inviteSecret = '';
   }
 
   openActions() {
@@ -826,7 +882,9 @@ export class ShellComponent implements OnInit {
       await this.load();
       const contact = this.contacts().find((item) => item.conversationId === event.conversationId);
       if (contact) {
-        const secret = this.secrets.consumePendingInvite(event.code);
+        // Fallback a inviteSecret por si una rotacion simultanea ya consumio el secreto de
+        // este codigo: todos los codigos rotados comparten el mismo secreto de contacto.
+        const secret = this.secrets.consumePendingInvite(event.code) || this.inviteSecret;
         if (secret) this.secrets.save('contact', event.conversationId, secret);
         this.sheet.set(null);
         this.invite.set(null);

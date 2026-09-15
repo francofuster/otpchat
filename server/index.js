@@ -43,6 +43,11 @@ const vapidSubject = process.env.VAPID_SUBJECT || `mailto:admin@${new URL(client
 // Sin temporizador propio, un audio vive un dia y despues lo barre cleanupExpiredMessages.
 const audioMaxTtlSeconds = 24 * 60 * 60;
 const maxAudioBytes = Number(process.env.MAX_AUDIO_BYTES || 3 * 1024 * 1024);
+// Las invitaciones (contacto y grupo) viven poco: el cliente muestra el QR y lo regenera
+// cada 30s, cancelando el anterior. Este TTL es el respaldo por si el cliente se cierra sin
+// cancelar, para que un link/QR filtrado no siga sirviendo horas. Un poco mayor que los 30s
+// de refresco para dar margen a que el invitado alcance a aceptar el codigo que ve.
+const invitationTtlMs = Number(process.env.INVITATION_TTL_MS || 60_000);
 
 if (vapidPublicKey && vapidPrivateKey) {
   webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
@@ -476,7 +481,7 @@ app.post('/api/invitations/contact', auth, async (req, res) => {
     inviterId: req.user.id,
     status: 'pending',
     createdAt: nowIso(),
-    expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + invitationTtlMs).toISOString(),
     link
   };
   await mutate((db) => db.invitations.push(invitation));
@@ -555,7 +560,7 @@ app.post('/api/groups/:id/invite', auth, async (req, res) => {
   if (!canModerate(groupRole(group, req.user.id))) return res.status(403).json({ error: 'Requiere admin o subadmin' });
   const code = nanoid(24);
   const link = inviteLink(code);
-  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, keyVersion: group.keyVersion || 1, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), link };
+  const invitation = { id: makeId('inv'), type: 'group', code, inviterId: req.user.id, groupId: req.params.id, keyVersion: group.keyVersion || 1, status: 'pending', createdAt: nowIso(), expiresAt: new Date(Date.now() + invitationTtlMs).toISOString(), link };
   await mutate((db) => db.invitations.push(invitation));
   res.json({ invitation });
 });

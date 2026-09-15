@@ -298,3 +298,19 @@ test('sembrar es idempotente: no duplica la cuenta ni se la da a otro', async ()
   assert.equal(admins.length, 1);
   assert.equal(admins[0].username, 'admintest');
 });
+
+// ── Las invitaciones vencen rapido (se rotan cada 30s desde el cliente) ──────────
+
+test('la invitacion de contacto vence en ~60s, no en 24h', async () => {
+  const user = await registrar('invitador');
+  const { body } = await api('/api/invitations/contact', { method: 'POST', token: user.token });
+  const restante = new Date(body.invitation.expiresAt).getTime() - Date.now();
+  assert.ok(restante > 0 && restante <= 65_000, `esperaba <=65s y vence en ${restante}ms`);
+});
+
+test('la invitacion de grupo tambien vence en ~60s', async () => {
+  const { dueno, grupo } = await grupoCon(0);
+  const { body } = await api(`/api/groups/${grupo.id}/invite`, { method: 'POST', token: dueno.token });
+  const restante = new Date(body.invitation.expiresAt).getTime() - Date.now();
+  assert.ok(restante > 0 && restante <= 65_000, `esperaba <=65s y vence en ${restante}ms`);
+});

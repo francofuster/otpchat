@@ -31,7 +31,7 @@ AES-256-GCM encripta         WebSocket retransmite            AES-256-GCM desenc
 - **TOTP visual** con indicador naranja/rojo cuando el código está por vencer
 - **Mensajes temporales** con countdown y limpieza automática server-side cada 30 s
 - **Permiso de escritura por grupo**: el admin principal puede dejar que solo admins y subadmins envíen mensajes
-- **Invitaciones por QR** para contactos y grupos, con expiración y cancelación
+- **Invitaciones por QR** para contactos y grupos: el código y el QR se **renuevan cada 30 s** y el anterior se cancela, para que un link filtrado no sirva por horas
 - **Fingerprint de dispositivo** con Canvas, WebGL, audio y fuentes + hash SHA-256
 - **Badges de no leídos** por chat, contados en el servidor, con tope "+99"
 - **Panel `/admin`** con stats, selección y borrado de cuentas (acceso por nombre reservado)
