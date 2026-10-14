@@ -22,6 +22,8 @@ import {
 } from './store.js';
 
 const app = express();
+// Detras del proxy de Render: sin esto el rate limit ve una sola IP (la del proxy) para todos.
+if (process.env.TRUST_PROXY !== '0') app.set('trust proxy', 1);
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const port = Number(process.env.PORT || 4900);
