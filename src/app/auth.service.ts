@@ -12,22 +12,34 @@ export class AuthService {
   readonly ready = signal(false);
   readonly isAuthed = computed(() => !!this.user());
 
+  private refreshing: Promise<boolean> | null = null;
+
   constructor(private http: HttpClient, private crypto: CryptoService) {}
 
   async boot() {
+    if (localStorage.getItem('otpchat_refresh')) await this.refresh();
+    this.ready.set(true);
+  }
+
+  // El JWT dura poco, asi que se renueva cuando el servidor lo rechaza. Los pedidos que
+  // fallen a la vez comparten una sola renovacion: el refresh token rota en cada uso y un
+  // segundo intento con el viejo cerraria la sesion.
+  refresh(): Promise<boolean> {
+    this.refreshing ??= this.doRefresh().finally(() => (this.refreshing = null));
+    return this.refreshing;
+  }
+
+  private async doRefresh(): Promise<boolean> {
     const refreshToken = localStorage.getItem('otpchat_refresh');
-    if (!refreshToken) {
-      this.ready.set(true);
-      return;
-    }
+    if (!refreshToken) return false;
     try {
       const fingerprint = await this.crypto.fingerprint();
       const res = await firstValueFrom(this.http.post<{ user: User; token: string; refreshToken: string }>(apiUrl('/api/auth/refresh'), { refreshToken, fingerprint }));
       this.store(res);
+      return true;
     } catch {
       this.clear();
-    } finally {
-      this.ready.set(true);
+      return false;
     }
   }
 
@@ -43,9 +55,12 @@ export class AuthService {
     this.store(res);
   }
 
-  async changePassword(password: string) {
-    const res = await firstValueFrom(this.http.post<{ user: User }>(apiUrl('/api/auth/change-password'), { password }));
-    this.user.set(res.user);
+  // El servidor corta todas las sesiones al cambiar la clave y devuelve una nueva para este
+  // dispositivo. currentPassword no hace falta en el cambio forzado tras un reset.
+  async changePassword(password: string, currentPassword?: string) {
+    const fingerprint = await this.crypto.fingerprint();
+    const res = await firstValueFrom(this.http.post<{ user: User; token: string; refreshToken: string }>(apiUrl('/api/auth/change-password'), { password, currentPassword, fingerprint }));
+    this.store(res);
   }
 
   async changeUsername(username: string) {

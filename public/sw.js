@@ -1,4 +1,4 @@
-const CACHE = 'otpchat-static-v3';
+const CACHE = 'otpchat-static-v4';
 const ASSETS = ['/', '/manifest.webmanifest', '/icons/icon.svg'];
 const PUSH_DB = 'otpchat-push';
 const PUSH_STORE = 'state';
@@ -73,6 +73,23 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  // La pagina va primero por red: con cache primero un deploy (incluidas las correcciones de
+  // seguridad) no le llegaba a nadie hasta cambiar CACHE. La copia guardada queda solo para
+  // abrir la app sin conexion.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            void caches.open(CACHE).then((cache) => cache.put('/', copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match('/'))
+    );
+    return;
+  }
   event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
 });
 

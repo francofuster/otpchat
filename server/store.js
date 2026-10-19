@@ -36,7 +36,9 @@ function datasourceOptions() {
     return {
       ...common,
       url: process.env.DATABASE_URL,
-      ssl: boolEnv('PGSSL', false) ? { rejectUnauthorized: false } : false
+      // Verifica el certificado del servidor de base. Sin verificar, cualquiera en el camino
+      // podia hacerse pasar por Postgres. PGSSL_INSECURE queda solo para casos puntuales.
+      ssl: boolEnv('PGSSL', false) ? { rejectUnauthorized: !boolEnv('PGSSL_INSECURE', false) } : false
     };
   }
   return {
@@ -125,14 +127,32 @@ function chunk(items, size) {
   return out;
 }
 
-export async function loadStore() {
-  await ensureDatabaseExists();
-  if (!AppDataSource.isInitialized) await AppDataSource.initialize();
+// Columnas agregadas despues del primer deploy. Con TYPEORM_SYNCHRONIZE=false TypeORM no las
+// crea, asi que se agregan aca de forma idempotente. Solo si la tabla ya existe: una base
+// vacia necesita un primer arranque con synchronize para crear el esquema.
+const columnMigrations = [
+  `alter table "users" add column if not exists "tokenVersion" integer not null default 0`
+];
+
+async function runColumnMigrations() {
+  const [{ exists }] = await AppDataSource.query(`select to_regclass('public.users') is not null as exists`);
+  if (!exists) return;
+  for (const sql of columnMigrations) await AppDataSource.query(sql);
+}
+
+async function readAll() {
   for (const key of Object.keys(collections)) {
     db[key] = await repo(key).find();
     snapshots[key].clear();
     for (const row of db[key]) snapshots[key].set(uniqueKeyFor(key, row), snapshotOf(row));
   }
+}
+
+export async function loadStore() {
+  await ensureDatabaseExists();
+  if (!AppDataSource.isInitialized) await AppDataSource.initialize();
+  await runColumnMigrations();
+  await readAll();
 }
 
 // El snapshot se actualiza recien despues de que cada paso confirma en la base. Si un
@@ -186,9 +206,17 @@ let pendingWrite = Promise.resolve();
 // garantiza que fn(db) y su guardado corran como una unidad.
 export function mutate(fn) {
   const run = pendingWrite.then(async () => {
-    const result = fn(db);
-    await saveStore();
-    return result;
+    try {
+      const result = fn(db);
+      await saveStore();
+      return result;
+    } catch (err) {
+      // Si la base rechaza el guardado, la memoria vuelve a lo que esta en la base. Sin esto
+      // la fila rechazada quedaba en memoria, cada guardado posterior volvia a intentarla y
+      // fallaban las escrituras de todos los usuarios hasta reiniciar el proceso.
+      await readAll().catch((reloadErr) => console.error('mutate: no se pudo recargar el estado', reloadErr));
+      throw err;
+    }
   });
   // La cola sigue viva aunque una mutacion falle: sin esto un error dejaria
   // encadenado un rechazo y toda escritura posterior fallaria tambien.

@@ -15,6 +15,8 @@ export const UserEntity = new EntitySchema({
     // cualquiera se renombrara al nombre magico y escalara): se siembra en el arranque
     // a partir de SUPERADMIN_USERNAME, que es config de confianza.
     isSuperadmin: { type: 'boolean', default: false },
+    // Va dentro del JWT. Subirla (cambio o reset de clave) invalida todos los tokens previos.
+    tokenVersion: { type: 'integer', default: 0 },
     createdAt: { type: 'text' },
     lastSeenAt: textDate
   }

@@ -13,7 +13,10 @@ export function usarBaseDescartable(nombre) {
   process.env.PGSSL = 'false';
   process.env.PGDATABASE = database;
   process.env.PG_CREATE_DATABASE = 'true';
-  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+  // El .env local puede traer NODE_ENV=production y el JWT_SECRET real. Las bases
+  // descartables nunca corren como produccion ni firman con el secreto de produccion.
+  process.env.NODE_ENV = 'test';
+  process.env.JWT_SECRET = 'test-secret-solo-para-bases-descartables';
   return database;
 }
 

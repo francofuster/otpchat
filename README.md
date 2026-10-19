@@ -21,7 +21,7 @@ AES-256-GCM encripta         WebSocket retransmite            AES-256-GCM desenc
 | Frontend | Angular 20, PWA |
 | Backend | Node.js, Express 5, WebSocket (`ws`) |
 | Base de datos | PostgreSQL 14+ vía TypeORM |
-| Autenticación | JWT 7 días + refresh token rotativo por dispositivo |
+| Autenticación | JWT de 1 h (revocable) + refresh token rotativo por dispositivo |
 | Cifrado | AES-256-GCM, PBKDF2, TOTP RFC 6238 en Web Crypto API |
 
 ### Características

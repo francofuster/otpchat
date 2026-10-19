@@ -288,7 +288,11 @@ test('el superadmin se siembra desde SUPERADMIN_PASSWORD cuando la cuenta no exi
   assert.equal(login.status, 200);
   assert.equal(login.body.user.isSuperadmin, true);
   assert.equal(login.body.user.mustChangePassword, true);
-  assert.equal((await api('/api/admin/stats', { token: login.body.token })).status, 200);
+  // Con la clave de env no se usa el panel: primero hay que definir una propia.
+  assert.equal((await api('/api/admin/stats', { token: login.body.token })).status, 403);
+  const cambio = await api('/api/auth/change-password', { method: 'POST', token: login.body.token, body: { password: 'Propia123!' } });
+  assert.equal(cambio.status, 200);
+  assert.equal((await api('/api/admin/stats', { token: cambio.body.token })).status, 200);
 });
 
 test('sembrar es idempotente: no duplica la cuenta ni se la da a otro', async () => {
@@ -313,4 +317,129 @@ test('la invitacion de grupo tambien vence en ~60s', async () => {
   const { body } = await api(`/api/groups/${grupo.id}/invite`, { method: 'POST', token: dueno.token });
   const restante = new Date(body.invitation.expiresAt).getTime() - Date.now();
   assert.ok(restante > 0 && restante <= 65_000, `esperaba <=65s y vence en ${restante}ms`);
+});
+
+// ── Fase 0 de la revision de seguridad ──────────────────────────────────────────
+
+async function contactoEntre(a, b) {
+  const { body: inv } = await api('/api/invitations/contact', { method: 'POST', token: a.token });
+  const { body } = await api(`/api/invitations/${inv.invitation.code}/accept`, { method: 'POST', token: b.token });
+  return { code: inv.invitation.code, conversationId: body.conversationId };
+}
+
+test('un temporizador invalido se rechaza y no frena las escrituras de los demas', async () => {
+  const a = await registrar('timerA');
+  const b = await registrar('timerB');
+  const { conversationId } = await contactoEntre(a, b);
+  for (const timerSeconds of [1.5, 'abc', 1e12, -30, 45]) {
+    const { status } = await api(`/api/conversations/${conversationId}/timer`, { method: 'PATCH', token: a.token, body: { timerSeconds } });
+    assert.equal(status, 400, `timerSeconds=${timerSeconds} deberia ser 400`);
+  }
+  // Antes un 1.5 dejaba la fila en memoria y desde ahi fallaba todo guardado.
+  await registrar('despuesDelTimer');
+  assert.equal((await api(`/api/conversations/${conversationId}/timer`, { method: 'PATCH', token: a.token, body: { timerSeconds: 30 } })).status, 200);
+});
+
+test('una keyVersion fuera de rango se rechaza', async () => {
+  const { dueno, grupo } = await grupoCon(0);
+  for (const keyVersion of [1e12, 2.5, 'x']) {
+    const { status } = await api(`/api/groups/${grupo.id}/key-version`, { method: 'PATCH', token: dueno.token, body: { keyVersion } });
+    assert.equal(status, 400, `keyVersion=${keyVersion} deberia ser 400`);
+  }
+  assert.equal((await api(`/api/groups/${grupo.id}/key-version`, { method: 'PATCH', token: dueno.token, body: { keyVersion: 2 } })).status, 200);
+});
+
+test('un durationMs enorme se acota y el audio se guarda', async () => {
+  const { dueno, grupo } = await grupoCon(0);
+  const { status, body } = await enviar(dueno.token, grupo.id, { kind: 'audio', durationMs: 1e15, mimeType: 'audio/webm' });
+  assert.equal(status, 200);
+  assert.equal(body.message.durationMs, 60 * 60_000);
+  await registrar('despuesDelAudio');
+});
+
+test('si la base rechaza un guardado, la memoria vuelve atras', async () => {
+  const user = await registrar('rollback');
+  // Simula una fila que Postgres no acepta (integer con decimales).
+  await assert.rejects(mutate((db) => {
+    db.messageTimerPreferences.push({ userId: user.user.id, scope: 'contact', targetId: 'x', timerSeconds: 1.5, updatedAt: new Date().toISOString() });
+  }));
+  assert.equal(state().messageTimerPreferences.length, 0);
+  await registrar('trasElRollback');
+});
+
+test('el registro valida el tipo y el formato del usuario', async () => {
+  for (const username of [123, ['abc'], { a: 1 }, 'ab', 'con espacios', 'fránco', 'x'.repeat(33)]) {
+    const { status } = await api('/api/auth/register', { method: 'POST', body: { username, password: 'Abcdef1!', fingerprint: 'fp-tipo' } });
+    assert.equal(status, 400, `username=${JSON.stringify(username)} deberia ser 400`);
+  }
+  // Y el registro sigue funcionando para los demas.
+  await registrar('normal');
+});
+
+test('el login con tipos raros responde 401 sin romper', async () => {
+  await registrar('tipos');
+  for (const body of [{ username: 1, password: 'x' }, { username: 'tipos0', password: ['x'] }, {}]) {
+    assert.equal((await api('/api/auth/login', { method: 'POST', body })).status, 401);
+  }
+});
+
+test('un texto cifrado demasiado grande se rechaza con 413', async () => {
+  const { dueno, grupo } = await grupoCon(0);
+  const { status } = await enviar(dueno.token, grupo.id, { encrypted: cifrado('A'.repeat(64 * 1024 + 1)) });
+  assert.equal(status, 413);
+});
+
+test('un payload cifrado con forma invalida se rechaza', async () => {
+  const { dueno, grupo } = await grupoCon(0);
+  for (const encrypted of [{ ciphertext: 'c' }, { ...cifrado(), keyStep: 'x' }, { ...cifrado(), iv: { a: 1 } }, 'texto']) {
+    assert.equal((await enviar(dueno.token, grupo.id, { encrypted })).status, 400);
+  }
+});
+
+test('el nombre de grupo se valida', async () => {
+  const user = await registrar('nombres');
+  assert.equal((await api('/api/groups', { method: 'POST', token: user.token, body: { name: 'x'.repeat(65) } })).status, 400);
+  assert.equal((await api('/api/groups', { method: 'POST', token: user.token, body: { name: { a: 1 } } })).status, 400);
+  assert.equal((await api('/api/groups', { method: 'POST', token: user.token, body: {} })).body.group.name, 'Grupo OTP');
+});
+
+test('cambiar la clave pide la actual y revoca los tokens anteriores', async () => {
+  const user = await registrar('cambio');
+  const sinActual = await api('/api/auth/change-password', { method: 'POST', token: user.token, body: { password: 'Nueva123!' } });
+  assert.equal(sinActual.status, 403);
+  const malActual = await api('/api/auth/change-password', { method: 'POST', token: user.token, body: { password: 'Nueva123!', currentPassword: 'Otra123!' } });
+  assert.equal(malActual.status, 403);
+
+  const ok = await api('/api/auth/change-password', { method: 'POST', token: user.token, body: { password: 'Nueva123!', currentPassword: 'Abcdef1!' } });
+  assert.equal(ok.status, 200);
+  // El JWT y el refresh token viejos ya no sirven; los nuevos si.
+  assert.equal((await api('/api/me', { token: user.token })).status, 401);
+  assert.equal((await api('/api/auth/refresh', { method: 'POST', body: { refreshToken: user.refreshToken, fingerprint: `fp-${user.user.username}` } })).status, 401);
+  assert.equal((await api('/api/me', { token: ok.body.token })).status, 200);
+});
+
+test('el reset del admin revoca el JWT del usuario y lo obliga a cambiar la clave', async () => {
+  const admin = await registrar('adminreset');
+  await mutate(() => { state().users.find((u) => u.id === admin.user.id).isSuperadmin = true; });
+  const victima = await registrar('reseteado');
+  const reset = await api(`/api/admin/users/${victima.user.id}/reset-password`, { method: 'POST', token: admin.token });
+  assert.equal(reset.status, 200);
+  assert.equal((await api('/api/me', { token: victima.token })).status, 401);
+
+  const login = await api('/api/auth/login', { method: 'POST', body: { username: victima.user.username, password: reset.body.temporaryPassword } });
+  assert.equal(login.status, 200);
+  // Hasta definir una clave propia solo puede cambiarla.
+  assert.equal((await api('/api/bootstrap', { token: login.body.token })).status, 403);
+  const cambio = await api('/api/auth/change-password', { method: 'POST', token: login.body.token, body: { password: 'Propia123!' } });
+  assert.equal(cambio.status, 200);
+  assert.equal((await api('/api/bootstrap', { token: cambio.body.token })).status, 200);
+});
+
+test('rechazar no pisa una invitacion ya aceptada', async () => {
+  const a = await registrar('rechazoA');
+  const b = await registrar('rechazoB');
+  const c = await registrar('rechazoC');
+  const { code } = await contactoEntre(a, b);
+  assert.equal((await api(`/api/invitations/${code}/reject`, { method: 'POST', token: c.token })).status, 200);
+  assert.equal(state().invitations.find((i) => i.code === code).status, 'accepted');
 });

@@ -27,7 +27,16 @@ if (process.env.TRUST_PROXY !== '0') app.set('trust proxy', 1);
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const port = Number(process.env.PORT || 4900);
+// En produccion no hay secreto por defecto: con uno conocido cualquiera fabrica tokens
+// validos para cualquier cuenta, admin incluido. Preferimos que el proceso no arranque.
+if (process.env.NODE_ENV === 'production' && String(process.env.JWT_SECRET || '').length < 32) {
+  console.error('JWT_SECRET falta o tiene menos de 32 caracteres. El servidor no arranca en produccion sin un secreto fuerte.');
+  process.exit(1);
+}
 const jwtSecret = process.env.JWT_SECRET || 'dev-otpchat-secret';
+// Corto a proposito: el refresh token rotativo cubre el auto-login, y un JWT robado deja
+// de servir rapido aunque nadie lo revoque.
+const jwtTtl = process.env.JWT_TTL || '1h';
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5900';
 // Config de confianza: quien tiene admin. Sin esta variable el nombre por defecto queda
 // reservado pero sin nadie que lo tenga, asi que el sistema arranca sin superadmin (fail
@@ -50,6 +59,17 @@ const maxAudioBytes = Number(process.env.MAX_AUDIO_BYTES || 3 * 1024 * 1024);
 // cancelar, para que un link/QR filtrado no siga sirviendo horas. Un poco mayor que los 30s
 // de refresco para dar margen a que el invitado alcance a aceptar el codigo que ve.
 const invitationTtlMs = Number(process.env.INVITATION_TTL_MS || 60_000);
+// Tope del ciphertext de un mensaje de texto. Antes solo los audios tenian limite y un texto
+// podia ocupar los ~6mb del parser de /api/messages, con todo el estado viviendo en RAM.
+const maxTextBytes = Number(process.env.MAX_TEXT_BYTES || 64 * 1024);
+const maxPasswordLength = 128;
+const maxGroupNameLength = 64;
+const maxAudioDurationMs = 60 * 60_000;
+// Mismos valores que ofrece el selector del cliente. Cualquier otro numero (fraccionario,
+// NaN, Infinity, fuera de rango de integer) lo rechazaba Postgres despues de haber tocado la
+// memoria, y desde ahi fallaba el guardado de todos.
+const timerOptions = new Set([0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800]);
+const maxInt32 = 2_147_483_647;
 
 if (vapidPublicKey && vapidPrivateKey) {
   webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
@@ -59,12 +79,13 @@ function inviteLink(code) {
   return `${clientOrigin.replace(/\/$/, '')}/#/invite/${code}`;
 }
 
-app.use(helmet({ contentSecurityPolicy: false }));
+// La API solo devuelve JSON: no tiene por que cargar nada ni dejarse embeber.
+app.use(helmet({ contentSecurityPolicy: { useDefaults: false, directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } } }));
 app.use(cors({ origin: clientOrigin, credentials: true }));
 // Los audios cifrados viajan como base64 dentro del JSON, asi que /api/messages necesita
 // mas margen que el resto. Va primero a proposito: marca el body como parseado y el
 // parser global de 1mb lo saltea, de modo que ninguna otra ruta hereda el limite grande.
-app.use('/api/messages', express.json({ limit: `${maxAudioBytes * 2}b` }));
+app.use('/api/messages', express.json({ limit: `${Math.max(maxAudioBytes, maxTextBytes) * 2}b` }));
 app.use(express.json({ limit: '1mb' }));
 const sinLimite = (req, res, next) => next();
 const limiter = (options) => (rateLimitEnabled ? rateLimit(options) : sinLimite);
@@ -78,12 +99,75 @@ function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
+// `tv` ata el token a la version vigente del usuario: subir tokenVersion (cambio o reset de
+// clave) invalida en el acto todos los JWT emitidos antes, sin esperar a que venzan.
 function sign(user) {
-  return jwt.sign({ sub: user.id, username: user.username }, jwtSecret, { expiresIn: '7d' });
+  return jwt.sign({ sub: user.id, username: user.username, tv: user.tokenVersion || 0 }, jwtSecret, { expiresIn: jwtTtl });
+}
+
+function verifyToken(token) {
+  const payload = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] });
+  const user = state().users.find((u) => u.id === payload.sub);
+  if (!user || (payload.tv ?? 0) !== (user.tokenVersion || 0)) return null;
+  return user;
+}
+
+// Entero dentro de [min, max] o null. Todo numero que llega del cliente pasa por aca antes
+// de tocar el estado en memoria.
+function intEnRango(value, min, max) {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+function timerValido(value) {
+  const n = intEnRango(value ?? 0, 0, maxInt32);
+  return n !== null && timerOptions.has(n) ? n : null;
+}
+
+// Misma regla para registro y renombre. El registro antes aceptaba cualquier valor JSON: un
+// username numerico rompia el .toLowerCase() de todos los registros posteriores.
+function usernameError(username) {
+  if (typeof username !== 'string') return 'Usuario invalido';
+  const value = username.trim();
+  if (value.length < 3) return 'El usuario debe tener al menos 3 caracteres';
+  if (value.length > 32) return 'El usuario no puede superar 32 caracteres';
+  if (!/^[A-Za-z0-9_.-]+$/.test(value)) return 'Usa solo letras, numeros, punto, guion o guion bajo';
+  return null;
+}
+
+function sameName(a, b) {
+  return String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+function groupNameValido(name) {
+  if (typeof name !== 'string') return null;
+  const value = name.trim();
+  return value.length >= 1 && value.length <= maxGroupNameLength ? value : null;
+}
+
+const base64 = /^[A-Za-z0-9+/=_-]*$/;
+
+// Reconstruye el payload cifrado con solo los campos esperados. Antes se guardaba el objeto
+// tal cual llegaba, con cualquier forma y tamano.
+function encryptedValido(encrypted, maxBytes) {
+  if (!encrypted || typeof encrypted !== 'object') return null;
+  const { iv, salt, ciphertext } = encrypted;
+  if (![iv, salt, ciphertext].every((v) => typeof v === 'string' && base64.test(v))) return null;
+  if (!ciphertext || iv.length > 64 || salt.length > 64 || ciphertext.length > maxBytes) return null;
+  const keyStep = intEnRango(encrypted.keyStep, 0, maxInt32);
+  const keyVersion = intEnRango(encrypted.keyVersion ?? 1, 1, maxInt32);
+  if (keyStep === null || keyVersion === null) return null;
+  return { iv, salt, ciphertext, keyStep, keyVersion };
+}
+
+function closeUserSockets(userId, code = 4401) {
+  for (const ws of online.get(userId) || []) ws.close(code, 'session');
+  online.delete(userId);
 }
 
 function passwordErrors(password) {
   const errors = [];
+  if (typeof password !== 'string' || password.length > maxPasswordLength) return [`entre 7 y ${maxPasswordLength} caracteres`];
   if (!password || password.length <= 6) errors.push('mas de 6 caracteres');
   if (!/[A-Z]/.test(password || '')) errors.push('1 mayuscula');
   if (!/[a-z]/.test(password || '')) errors.push('1 minuscula');
@@ -107,19 +191,26 @@ function issueSession(user, deviceFingerprint) {
   return plain;
 }
 
+// Lo unico que puede hacer una cuenta con la clave reseteada (o la del admin sembrada desde
+// env) hasta definir una propia. Antes el flag solo lo miraba el front.
+const allowedWhileMustChange = new Set(['/api/auth/change-password', '/api/auth/logout', '/api/me']);
+
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  let user;
   try {
-    const payload = jwt.verify(token, jwtSecret);
-    const user = state().users.find((u) => u.id === payload.sub);
-    if (!user) return res.status(401).json({ error: 'Sesión inválida' });
-    req.user = user;
-    user.lastSeenAt = nowIso();
-    next();
+    user = verifyToken(token);
   } catch {
-    res.status(401).json({ error: 'Sesión inválida' });
+    user = null;
   }
+  if (!user) return res.status(401).json({ error: 'Sesión inválida' });
+  if (user.mustChangePassword && !allowedWhileMustChange.has(req.path)) {
+    return res.status(403).json({ error: 'Tenés que cambiar la contraseña', mustChangePassword: true });
+  }
+  req.user = user;
+  user.lastSeenAt = nowIso();
+  next();
 }
 
 function requireAdmin(req, res, next) {
@@ -139,7 +230,7 @@ function isReservedName(username) {
 // basarse solo en config de confianza, corrige cualquier fila que quedara con el flag mal
 // puesto (por datos viejos o por un intento de escalada previo).
 async function seedSuperadmin() {
-  const existe = state().users.some((u) => u.username.toLowerCase() === superadminName.toLowerCase());
+  const existe = state().users.some((u) => sameName(u.username, superadminName));
   const bootstrapPassword = process.env.SUPERADMIN_PASSWORD || '';
 
   // El nombre del admin esta reservado, asi que no se puede dar de alta por el registro
@@ -154,6 +245,7 @@ async function seedSuperadmin() {
       passwordHash: await bcrypt.hash(bootstrapPassword, 12),
       deviceFingerprint: 'server-seed',
       mustChangePassword: true,
+      tokenVersion: 0,
       isSuperadmin: false,
       createdAt: nowIso(),
       lastSeenAt: nowIso()
@@ -164,7 +256,7 @@ async function seedSuperadmin() {
   // Re-asienta el flag: solo la cuenta designada queda como superadmin, el resto en false.
   let cambios = false;
   for (const user of state().users) {
-    const deberia = user.username.toLowerCase() === superadminName.toLowerCase();
+    const deberia = sameName(user.username, superadminName);
     if (user.isSuperadmin !== deberia) {
       user.isSuperadmin = deberia;
       cambios = true;
@@ -317,14 +409,26 @@ function unreadCounts(userId) {
 // Sin auth a proposito: lo usan el arranque de los tests E2E y el health check de Render.
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+function fingerprintValido(fingerprint) {
+  return typeof fingerprint === 'string' && fingerprint.length >= 1 && fingerprint.length <= 128;
+}
+
+// Se compara contra este hash cuando el usuario no existe, para que el tiempo de respuesta
+// no revele que nombres estan registrados.
+const dummyPasswordHash = bcrypt.hashSync(randomBytes(16).toString('hex'), 12);
+
 app.post('/api/auth/register', registerLimiter, async (req, res) => {
-  const { username, password, fingerprint } = req.body || {};
-  if (!username || !password || !fingerprint) return res.status(400).json({ error: 'Faltan datos' });
+  const { password, fingerprint } = req.body || {};
+  if (!req.body?.username || !password || !fingerprint) return res.status(400).json({ error: 'Faltan datos' });
+  const nameError = usernameError(req.body.username);
+  if (nameError) return res.status(400).json({ error: nameError });
+  if (!fingerprintValido(fingerprint)) return res.status(400).json({ error: 'Faltan datos' });
+  const username = req.body.username.trim();
   const passErrors = passwordErrors(password);
   if (passErrors.length) return res.status(400).json({ error: `La contraseña debe tener ${passErrors.join(', ')}` });
   const blockedUntil = registerCooldownEnabled ? registerBlocked(req.ip, fingerprint) : null;
   if (blockedUntil) return res.status(429).json({ error: 'Registro en cooldown', blockedUntil });
-  if (isReservedName(username) || state().users.some((u) => u.username.toLowerCase() === String(username).toLowerCase())) {
+  if (isReservedName(username) || state().users.some((u) => sameName(u.username, username))) {
     return res.status(409).json({ error: 'Usuario no disponible' });
   }
   if (deviceAccountLimitEnabled && state().users.some((u) => u.deviceFingerprint === fingerprint)) {
@@ -336,6 +440,7 @@ app.post('/api/auth/register', registerLimiter, async (req, res) => {
     passwordHash: await bcrypt.hash(password, 12),
     deviceFingerprint: fingerprint,
     mustChangePassword: false,
+    tokenVersion: 0,
     isSuperadmin: false,
     createdAt: nowIso(),
     lastSeenAt: nowIso()
@@ -350,11 +455,17 @@ app.post('/api/auth/register', registerLimiter, async (req, res) => {
 
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { username, password, fingerprint } = req.body || {};
-  const user = state().users.find((u) => u.username.toLowerCase() === String(username || '').toLowerCase());
-  if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) {
+  if (typeof username !== 'string' || typeof password !== 'string' || password.length > maxPasswordLength) {
     return res.status(401).json({ error: 'Usuario o contraseña inválidos' });
   }
-  if (deviceAccountLimitEnabled && fingerprint && user.deviceFingerprint !== fingerprint && user.username !== superadminName) {
+  if (fingerprint !== undefined && !fingerprintValido(fingerprint)) return res.status(400).json({ error: 'Faltan datos' });
+  const user = state().users.find((u) => sameName(u.username, username.trim()));
+  const passwordOk = await bcrypt.compare(password, user?.passwordHash || dummyPasswordHash);
+  if (!user || !passwordOk) {
+    return res.status(401).json({ error: 'Usuario o contraseña inválidos' });
+  }
+  // Con el limite por dispositivo activo, omitir el fingerprint ya no lo saltea.
+  if (deviceAccountLimitEnabled && user.deviceFingerprint !== fingerprint && user.username !== superadminName) {
     return res.status(403).json({ error: 'Cuenta vinculada a otro dispositivo' });
   }
   const refreshToken = issueSession(user, fingerprint || user.deviceFingerprint);
@@ -385,15 +496,29 @@ app.post('/api/auth/logout', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Pide la clave actual (salvo en el cambio forzado tras un reset): con solo un JWT robado ya
+// no se puede tomar la cuenta. Al cambiarla se cortan todas las sesiones, la propia incluida,
+// y se emite una nueva para este dispositivo.
 app.post('/api/auth/change-password', auth, async (req, res) => {
-  const { password } = req.body || {};
+  const { password, currentPassword, fingerprint } = req.body || {};
+  if (!req.user.mustChangePassword) {
+    const ok = typeof currentPassword === 'string' && currentPassword.length <= maxPasswordLength && await bcrypt.compare(currentPassword, req.user.passwordHash);
+    if (!ok) return res.status(403).json({ error: 'La contraseña actual no es correcta' });
+  }
   const passErrors = passwordErrors(password);
   if (passErrors.length) return res.status(400).json({ error: `La contraseña debe tener ${passErrors.join(', ')}` });
-  await mutate(() => {
-    req.user.passwordHash = bcrypt.hashSync(password, 12);
-    req.user.mustChangePassword = false;
+  const passwordHash = await bcrypt.hash(password, 12);
+  const user = req.user;
+  let refreshToken;
+  await mutate((db) => {
+    user.passwordHash = passwordHash;
+    user.mustChangePassword = false;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    db.sessions = db.sessions.filter((s) => s.userId !== user.id);
+    refreshToken = issueSession(user, fingerprintValido(fingerprint) ? fingerprint : user.deviceFingerprint);
   });
-  res.json({ user: publicUser(req.user, { includeFingerprint: true }) });
+  closeUserSockets(user.id);
+  res.json({ user: publicUser(user, { includeFingerprint: true }), token: sign(user), refreshToken });
 });
 
 app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user, { includeFingerprint: true }) }));
@@ -435,13 +560,12 @@ app.post('/api/push/unsubscribe', auth, async (req, res) => {
 });
 
 app.patch('/api/auth/username', auth, async (req, res) => {
-  const username = String(req.body?.username || '').trim();
-  if (username.length < 3) return res.status(400).json({ error: 'El usuario debe tener al menos 3 caracteres' });
-  if (username.length > 32) return res.status(400).json({ error: 'El usuario no puede superar 32 caracteres' });
-  if (!/^[A-Za-z0-9_.-]+$/.test(username)) return res.status(400).json({ error: 'Usa solo letras, numeros, punto, guion o guion bajo' });
+  const nameError = usernameError(req.body?.username);
+  if (nameError) return res.status(400).json({ error: nameError });
+  const username = req.body.username.trim();
   // Reservado salvo que ya sea el nombre del propio usuario (para no bloquear un no-op).
-  const claimingReserved = isReservedName(username) && req.user.username.toLowerCase() !== username.toLowerCase();
-  const taken = claimingReserved || state().users.some((u) => u.id !== req.user.id && u.username.toLowerCase() === username.toLowerCase());
+  const claimingReserved = isReservedName(username) && !sameName(req.user.username, username);
+  const taken = claimingReserved || state().users.some((u) => u.id !== req.user.id && sameName(u.username, username));
   if (taken) return res.status(409).json({ error: 'Ese usuario ya existe' });
   await mutate(() => {
     req.user.username = username;
@@ -534,15 +658,21 @@ app.post('/api/invitations/:code/accept', auth, async (req, res) => {
 app.post('/api/invitations/:code/reject', auth, async (req, res) => {
   const invitation = state().invitations.find((i) => i.code === req.params.code);
   if (!invitation) return res.status(404).json({ error: 'No encontrada' });
-  if (invitation.type === 'group') return res.json({ ok: true });
+  // Solo una invitacion de contacto vigente y ajena se puede rechazar. Antes cualquiera con
+  // el codigo pisaba el estado (incluso de una ya aceptada) y le mandaba avisos al invitador.
+  if (invitation.type === 'group' || invitation.status !== 'pending' || !notExpired(invitation) || invitation.inviterId === req.user.id) {
+    return res.json({ ok: true });
+  }
   await mutate(() => (invitation.status = 'rejected'));
   sendToUser(invitation.inviterId, { type: 'invitation:rejected', invitation });
   res.json({ ok: true });
 });
 
 app.post('/api/groups', auth, async (req, res) => {
-  const { name } = req.body || {};
-  const group = { id: makeId('grp'), name: name || 'Grupo OTP', founderId: req.user.id, keyVersion: 1, timerSeconds: 0, membersCanWrite: true, createdAt: nowIso() };
+  const rawName = req.body?.name;
+  const name = rawName === undefined || rawName === null || rawName === '' ? 'Grupo OTP' : groupNameValido(rawName);
+  if (!name) return res.status(400).json({ error: `El nombre del grupo debe tener entre 1 y ${maxGroupNameLength} caracteres` });
+  const group = { id: makeId('grp'), name, founderId: req.user.id, keyVersion: 1, timerSeconds: 0, membersCanWrite: true, createdAt: nowIso() };
   await mutate((db) => {
     db.groups.push(group);
     db.groupMembers.push({ groupId: group.id, userId: req.user.id, role: 'admin', joinedAt: nowIso() });
@@ -573,8 +703,8 @@ app.patch('/api/groups/:id/key-version', auth, async (req, res) => {
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
   if (groupRole(group, req.user.id) !== 'admin') return res.status(403).json({ error: 'Solo admin principal' });
-  const keyVersion = Number(req.body?.keyVersion || 0);
-  if (keyVersion <= (group.keyVersion || 1)) return res.status(400).json({ error: 'Version invalida' });
+  const keyVersion = intEnRango(req.body?.keyVersion, 1, maxInt32);
+  if (keyVersion === null || keyVersion <= (group.keyVersion || 1)) return res.status(400).json({ error: 'Version invalida' });
   await mutate(() => {
     group.keyVersion = keyVersion;
     for (const invitation of state().invitations.filter((i) => i.type === 'group' && i.groupId === group.id && i.status === 'pending')) {
@@ -586,7 +716,8 @@ app.patch('/api/groups/:id/key-version', auth, async (req, res) => {
 });
 
 app.patch('/api/conversations/:id/timer', auth, async (req, res) => {
-  const timerSeconds = Number(req.body?.timerSeconds || 0);
+  const timerSeconds = timerValido(req.body?.timerSeconds);
+  if (timerSeconds === null) return res.status(400).json({ error: 'Temporizador invalido' });
   const contact = state().contacts.find((c) => c.conversationId === req.params.id && c.userIds.includes(req.user.id));
   if (!contact) return res.status(404).json({ error: 'Chat no encontrado' });
   await mutate(() => setTimerPreference(req.user.id, 'contact', contact.conversationId, timerSeconds));
@@ -594,7 +725,8 @@ app.patch('/api/conversations/:id/timer', auth, async (req, res) => {
 });
 
 app.patch('/api/groups/:id/timer', auth, async (req, res) => {
-  const timerSeconds = Number(req.body?.timerSeconds || 0);
+  const timerSeconds = timerValido(req.body?.timerSeconds);
+  if (timerSeconds === null) return res.status(400).json({ error: 'Temporizador invalido' });
   const member = state().groupMembers.find((m) => m.groupId === req.params.id && m.userId === req.user.id);
   if (!member) return res.status(403).json({ error: 'No perteneces al grupo' });
   const group = state().groups.find((g) => g.id === req.params.id);
@@ -608,9 +740,14 @@ app.patch('/api/groups/:id', auth, async (req, res) => {
   if (!member || member.role !== 'admin') return res.status(403).json({ error: 'Requiere admin' });
   const group = state().groups.find((g) => g.id === req.params.id);
   if (!group) return res.status(404).json({ error: 'Grupo no encontrado' });
+  // Se valida todo antes de tocar el grupo en memoria.
+  const name = req.body?.name ? groupNameValido(req.body.name) : undefined;
+  if (name === null) return res.status(400).json({ error: `El nombre del grupo debe tener entre 1 y ${maxGroupNameLength} caracteres` });
+  const timerSeconds = req.body?.timerSeconds !== undefined ? timerValido(req.body.timerSeconds) : undefined;
+  if (timerSeconds === null) return res.status(400).json({ error: 'Temporizador invalido' });
   await mutate(() => {
-    if (req.body?.name) group.name = req.body.name;
-    if (req.body?.timerSeconds !== undefined) group.timerSeconds = Number(req.body.timerSeconds || 0);
+    if (name) group.name = name;
+    if (timerSeconds !== undefined) group.timerSeconds = timerSeconds;
     // Solo el admin principal llega hasta aca, asi que el candado del grupo se abre y
     // cierra desde el mismo lugar que el nombre y el temporizador.
     if (req.body?.membersCanWrite !== undefined) group.membersCanWrite = req.body.membersCanWrite !== false;
@@ -787,13 +924,19 @@ app.post('/api/messages/:scope/:id/read', auth, async (req, res) => {
 });
 
 app.post('/api/messages', auth, async (req, res) => {
-  const { scope, targetId, encrypted, durationMs, mimeType } = req.body || {};
-  if (!canAccessChat(req.user.id, scope, targetId) || !encrypted?.ciphertext) return res.status(400).json({ error: 'Mensaje inválido' });
+  const { scope, targetId, durationMs, mimeType } = req.body || {};
+  const encrypted = encryptedValido(req.body?.encrypted, Infinity);
+  if (!canAccessChat(req.user.id, scope, targetId) || !encrypted) return res.status(400).json({ error: 'Mensaje inválido' });
   if (!canWriteChat(req.user.id, scope, targetId)) return res.status(403).json({ error: 'Solo administradores pueden enviar mensajes' });
   const kind = req.body?.kind === 'audio' ? 'audio' : 'text';
   if (kind === 'audio' && encrypted.ciphertext.length > maxAudioBytes) {
     return res.status(413).json({ error: 'El audio es demasiado largo' });
   }
+  if (kind === 'text' && encrypted.ciphertext.length > maxTextBytes) {
+    return res.status(413).json({ error: 'El mensaje es demasiado largo' });
+  }
+  // Acotado: un durationMs enorme desbordaba la columna integer y frenaba todo guardado.
+  const duration = Number.isFinite(Number(durationMs)) ? Math.min(maxAudioDurationMs, Math.max(0, Math.round(Number(durationMs)))) : 0;
   const timerSeconds = timerPreference(req.user.id, scope, targetId);
   // Los audios nunca quedan para siempre: sin temporizador duran un dia, y con
   // temporizador puesto mandan los segundos que eligio quien los graba.
@@ -805,7 +948,7 @@ app.post('/api/messages', auth, async (req, res) => {
     senderId: req.user.id,
     encrypted,
     kind,
-    durationMs: kind === 'audio' ? Math.max(0, Math.round(Number(durationMs) || 0)) : null,
+    durationMs: kind === 'audio' ? duration : null,
     mimeType: kind === 'audio' ? String(mimeType || 'audio/webm').slice(0, 64) : null,
     createdAt: nowIso(),
     expiresAt: ttlSeconds ? new Date(Date.now() + ttlSeconds * 1000).toISOString() : null
@@ -847,9 +990,12 @@ app.post('/api/admin/users/:id/reset-password', auth, requireAdmin, async (req, 
   await mutate((db) => {
     user.passwordHash = bcrypt.hashSync(temp, 12);
     user.mustChangePassword = true;
+    // Corta tambien los JWT ya emitidos: antes seguian sirviendo hasta 7 dias.
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     db.sessions = db.sessions.filter((s) => s.userId !== user.id);
   });
   sendToUser(user.id, { type: 'session:invalidated' });
+  closeUserSockets(user.id);
   res.json({ temporaryPassword: temp });
 });
 
@@ -869,15 +1015,17 @@ app.delete('/api/admin/users', auth, requireAdmin, async (req, res) => {
 wss.on('connection', (ws, req) => {
   const token = new URL(req.url, `http://${req.headers.host}`).searchParams.get('token');
   try {
-    const payload = jwt.verify(token, jwtSecret);
-    const user = state().users.find((u) => u.id === payload.sub);
-    if (!user) throw new Error('missing user');
+    const user = verifyToken(token);
+    // 4401: token vencido o revocado, el cliente renueva y reintenta. 4403: tiene que
+    // cambiar la clave antes de recibir nada.
+    if (!user) return ws.close(4401, 'session');
+    if (user.mustChangePassword) return ws.close(4403, 'must-change-password');
     if (!online.has(user.id)) online.set(user.id, new Set());
     online.get(user.id).add(ws);
     ws.send(JSON.stringify({ type: 'socket:ready' }));
     ws.on('close', () => online.get(user.id)?.delete(ws));
   } catch {
-    ws.close();
+    ws.close(4401, 'session');
   }
 });
 

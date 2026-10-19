@@ -131,9 +131,18 @@ export class ApiService {
   connect(onEvent: (event: any) => void) {
     const token = this.auth.token();
     if (!token || this.socket?.readyState === WebSocket.OPEN) return;
-    this.socket = new WebSocket(`${wsUrl('/ws')}?token=${encodeURIComponent(token)}`);
-    this.socket.onmessage = (event) => onEvent(JSON.parse(event.data));
-    this.socket.onclose = () => setTimeout(() => this.connect(onEvent), 1500);
+    const socket = new WebSocket(`${wsUrl('/ws')}?token=${encodeURIComponent(token)}`);
+    this.socket = socket;
+    socket.onmessage = (event) => onEvent(JSON.parse(event.data));
+    socket.onclose = async (event) => {
+      if (this.socket !== socket) return;
+      // 4403: tiene que cambiar la clave; se reconecta despues del cambio, desde load().
+      if (event.code === 4403) return;
+      // 4401: token vencido o revocado. Si mientras tanto llego uno nuevo (por ejemplo tras
+      // cambiar la clave) alcanza con reconectar; si no, se renueva primero.
+      if (event.code === 4401 && this.auth.token() === token && !(await this.auth.refresh())) return;
+      setTimeout(() => this.connect(onEvent), 1500);
+    };
   }
 
   toast(message: string) {

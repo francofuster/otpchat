@@ -27,14 +27,22 @@ Environment variables:
 NODE_ENV=production
 DATABASE_URL=<neon pooled connection string>
 PGSSL=true
-JWT_SECRET=<long random secret>
+JWT_SECRET=<long random secret, 32+ caracteres>
 CLIENT_ORIGIN=<your Vercel production URL>
-TYPEORM_SYNCHRONIZE=true
+TYPEORM_SYNCHRONIZE=false
 SUPERADMIN_USERNAME=<nombre de usuario del admin>
 SUPERADMIN_PASSWORD=<clave inicial del admin>
 REGISTER_COOLDOWN_ENABLED=false
 DEVICE_ACCOUNT_LIMIT_ENABLED=false
 ```
+
+**Cambios de seguridad que afectan el entorno:**
+
+- **`JWT_SECRET` es obligatorio.** Con `NODE_ENV=production` el servidor no arranca si falta o tiene menos de 32 caracteres.
+- **`JWT_TTL`** (opcional, por defecto `1h`) define cuanto dura el JWT. El cliente lo renueva solo con el refresh token.
+- **`TYPEORM_SYNCHRONIZE=false` en produccion.** Las columnas nuevas (por ahora `users.tokenVersion`) las agrega `server/store.js` en el arranque. Una base **vacia** necesita un primer arranque con `TYPEORM_SYNCHRONIZE=true` para crear el esquema; despues se vuelve a `false`.
+- **El certificado de Postgres se verifica.** Con `PGSSL=true` la conexion rechaza certificados invalidos; Neon tiene certificados publicos validos. `PGSSL_INSECURE=true` desactiva la verificacion y solo deberia usarse para diagnosticar.
+- **`MAX_TEXT_BYTES`** (opcional, por defecto `65536`) es el tope del ciphertext de un mensaje de texto.
 
 **Sobre el superadmin.** El panel `/admin` ya no se otorga por tener un nombre magico. El nombre que pongas en `SUPERADMIN_USERNAME` queda **reservado** (nadie puede registrarlo ni renombrarse a el), asi que la cuenta admin **no se crea por el registro normal**: la crea el servidor en el arranque a partir de `SUPERADMIN_PASSWORD`.
 
@@ -72,6 +80,8 @@ OTPCHAT_API_BASE=<your Render service URL, for example https://otpchat-api.onren
 ```
 
 The build script writes `public/config.js`, so the Angular app knows where the Render API and WebSocket live.
+
+`vercel.json` sets a Content-Security-Policy: only scripts served from the site itself run (no inline scripts), and `connect-src` allows any `https:`/`wss:` origin so the Render API works without hardcoding its URL. To narrow it, replace `https: wss:` with your Render URL (`https://...onrender.com wss://...onrender.com`).
 
 Official docs:
 

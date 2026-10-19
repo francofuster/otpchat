@@ -17,8 +17,10 @@ services:
         sync: false
       - key: PGSSL
         value: true
+      # En false: synchronize puede borrar columnas o datos al cambiar una entidad. Las
+      # columnas nuevas las agrega store.js (runColumnMigrations) en el arranque.
       - key: TYPEORM_SYNCHRONIZE
-        value: true
+        value: false
       - key: REGISTER_COOLDOWN_ENABLED
         value: false
       - key: DEVICE_ACCOUNT_LIMIT_ENABLED

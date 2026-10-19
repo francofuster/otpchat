@@ -31,6 +31,7 @@ export class ShellComponent implements OnInit {
   newPassword = '';
   accountUsername = '';
   accountPassword = '';
+  accountCurrentPassword = '';
   showPassword = false;
   showRepeatPassword = false;
   showNewPassword = false;
@@ -120,7 +121,9 @@ export class ShellComponent implements OnInit {
           await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
           return;
         }
-        await this.load();
+        // Con la clave reseteada el servidor rechaza todo salvo el cambio de clave: los chats
+        // se cargan recien despues de changePassword().
+        if (!this.auth.user()?.mustChangePassword) await this.load();
       }
     }, 100);
     setInterval(() => this.pruneExpired(), 1000);
@@ -159,7 +162,7 @@ export class ShellComponent implements OnInit {
         await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
         return;
       }
-      await this.load();
+      if (!this.auth.user()?.mustChangePassword) await this.load();
     } catch (err: any) {
       const blocked = err.error?.blockedUntil ? ` Disponible ${this.countdown(err.error.blockedUntil)}` : '';
       this.authError.set((err.error?.error || err.message || 'No se pudo entrar') + blocked);
@@ -174,8 +177,13 @@ export class ShellComponent implements OnInit {
       this.api.toast(`La contraseña debe tener ${errors.join(', ')}.`);
       return;
     }
-    await this.auth.changePassword(this.newPassword);
-    this.newPassword = '';
+    try {
+      await this.auth.changePassword(this.newPassword);
+      this.newPassword = '';
+      await this.load();
+    } catch (err: any) {
+      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseña');
+    }
   }
 
   async load() {
@@ -614,6 +622,7 @@ export class ShellComponent implements OnInit {
     this.invite.set(null);
     this.accountUsername = this.auth.user()?.username || '';
     this.accountPassword = '';
+    this.accountCurrentPassword = '';
     this.sheet.set('settings');
   }
 
@@ -808,9 +817,14 @@ export class ShellComponent implements OnInit {
       this.api.toast(`La contraseña debe tener ${errors.join(', ')}.`);
       return;
     }
+    if (!this.accountCurrentPassword) {
+      this.api.toast('Ingresá tu contraseña actual.');
+      return;
+    }
     try {
-      await this.auth.changePassword(this.accountPassword);
+      await this.auth.changePassword(this.accountPassword, this.accountCurrentPassword);
       this.accountPassword = '';
+      this.accountCurrentPassword = '';
       this.api.toast('Contraseña actualizada');
     } catch (err: any) {
       this.api.toast(err.error?.error || 'No se pudo cambiar la contraseña');

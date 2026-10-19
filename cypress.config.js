@@ -48,7 +48,7 @@ export default defineConfig({
               token: b.token,
               // El contenido real no importa: sin la llave local el cliente muestra el
               // aviso de "falta la llave", pero el CONTEO de no leidos es del servidor.
-              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`e2e ${i}`) } }
+              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`e2e ${i}`), keyStep: 1, keyVersion: 1 } }
             });
           }
           return { usuarioA: nombreA, usuarioB: nombreB, password, conversationId };
@@ -61,7 +61,7 @@ export default defineConfig({
             await api('/api/messages', {
               method: 'POST',
               token: sesion.token,
-              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`extra ${i}`) } }
+              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`extra ${i}`), keyStep: 1, keyVersion: 1 } }
             });
           }
           return null;

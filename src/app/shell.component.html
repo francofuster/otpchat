@@ -380,6 +380,9 @@
       <div class="settings-block">
         <h3>Contraseña</h3>
         <label class="password-field">
+          <input name="accountCurrentPassword" [(ngModel)]="accountCurrentPassword" [type]="showAccountPassword ? 'text' : 'password'" placeholder="Contraseña actual" autocomplete="current-password">
+        </label>
+        <label class="password-field">
           <input name="accountPassword" [(ngModel)]="accountPassword" [type]="showAccountPassword ? 'text' : 'password'" placeholder="Nueva contraseña">
           <button type="button" title="Ver contraseña" (click)="showAccountPassword = !showAccountPassword">
             @if (showAccountPassword) {
