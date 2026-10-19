@@ -1,5 +1,33 @@
 # Deploy OTPChat
 
+## v2: relay sin base de datos
+
+Desde la versión 2 el servidor es un **relay sin base de datos** (`server/relay.js`, WebSocket en `/relay`). Para correrlo alcanza con:
+
+```env
+NODE_ENV=production
+JWT_SECRET=<32+ caracteres; lo exige el arranque aunque la API v1 esté apagada>
+CLIENT_ORIGIN=https://otpchat.vercel.app
+VAPID_PUBLIC_KEY=<opcional, para avisos push>
+VAPID_PRIVATE_KEY=<opcional>
+```
+
+- `CLIENT_ORIGIN` acepta varios orígenes separados por coma. Las apps nativas (`https://localhost` de Capacitor y `app://otpchat` de Electron) se permiten siempre.
+- Todo lo del relay vive en memoria: buzones, directorio de tarjetas y suscripciones push. En el plan gratis de Render el servicio se duerme a los 15 minutos sin tráfico y lo pierde; los nodos lo recuperan entre sí al reconectarse (sincronización recíproca), pero un mensaje para alguien desconectado puede tardar hasta que los dos estén en línea a la vez. Un plan que no duerma evita esa demora.
+
+### Migración y retiro de la base
+
+Mientras `DATABASE_URL` esté configurada, el mismo proceso sirve también la **API v1** para que cada persona importe sus chats anteriores desde la app (banner "Tenés chats de la versión anterior"). Cuando termine el período de migración:
+
+1. Quitá `DATABASE_URL` (y `PGSSL`, `SUPERADMIN_*`) de Render y redeployá. El log tiene que decir `relay v2, sin base de datos` y `/api/*` responde `410` salvo `/api/health`.
+2. Borrá el proyecto de Neon.
+
+Desde ahí no queda ninguna base de datos central.
+
+---
+
+## Configuración v1 (solo durante la migración)
+
 ## 1. Neon Postgres
 
 1. Create a Neon project.

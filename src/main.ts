@@ -1,13 +1,13 @@
+import { LOCALE_ID } from '@angular/core';
+import { registerLocaleData } from '@angular/common';
+import localeEsAr from '@angular/common/locales/es-AR';
 import { bootstrapApplication } from '@angular/platform-browser';
-import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { provideRouter, withHashLocation } from '@angular/router';
 import { AppComponent } from './app/app.component';
-import { authInterceptor } from './app/auth.interceptor';
 import { routes } from './app/routes';
 
+registerLocaleData(localeEsAr);
+
 bootstrapApplication(AppComponent, {
-  providers: [
-    provideHttpClient(withInterceptors([authInterceptor])),
-    provideRouter(routes, withHashLocation())
-  ]
+  providers: [provideRouter(routes, withHashLocation()), { provide: LOCALE_ID, useValue: 'es-AR' }]
 }).catch((err) => console.error(err));

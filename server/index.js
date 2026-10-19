@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { nanoid } from 'nanoid';
+import { createRelay } from './relay.js';
 import {
   conversationIdForUsers,
   loadStore,
@@ -25,7 +26,10 @@ const app = express();
 // Detras del proxy de Render: sin esto el rate limit ve una sola IP (la del proxy) para todos.
 if (process.env.TRUST_PROXY !== '0') app.set('trust proxy', 1);
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+// v1 (/ws, con base de datos) y v2 (/relay, sin base) comparten el puerto. Con dos
+// WebSocketServer atados al mismo server cada uno rechaza el path del otro, asi que los
+// upgrades se enrutan a mano.
+const wss = new WebSocketServer({ noServer: true });
 const port = Number(process.env.PORT || 4900);
 // En produccion no hay secreto por defecto: con uno conocido cualquiera fabrica tokens
 // validos para cualquier cuenta, admin incluido. Preferimos que el proceso no arranque.
@@ -37,7 +41,15 @@ const jwtSecret = process.env.JWT_SECRET || 'dev-otpchat-secret';
 // Corto a proposito: el refresh token rotativo cubre el auto-login, y un JWT robado deja
 // de servir rapido aunque nadie lo revoque.
 const jwtTtl = process.env.JWT_TTL || '1h';
-const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5900';
+// CLIENT_ORIGIN admite varios origenes separados por coma; el primero es el sitio principal.
+// Las apps nativas cargan la web desde su propio origen y se suman siempre.
+const clientOrigins = String(process.env.CLIENT_ORIGIN || 'http://localhost:5900').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean);
+const nativeOrigins = ['https://localhost', 'capacitor://localhost', 'app://otpchat'];
+const allowedOrigins = [...new Set([...clientOrigins, ...nativeOrigins])];
+const clientOrigin = clientOrigins[0];
+// La API v1 necesita la base. Sin DATABASE_URL (ni LEGACY_API=1 para la base local) el
+// servidor arranca solo como relay v2, sin ninguna base de datos.
+const legacyEnabled = process.env.LEGACY_API !== '0' && (!!process.env.DATABASE_URL || process.env.LEGACY_API === '1');
 // Config de confianza: quien tiene admin. Sin esta variable el nombre por defecto queda
 // reservado pero sin nadie que lo tenga, asi que el sistema arranca sin superadmin (fail
 // closed). Para habilitar admin, registra una cuenta normal y apunta esta env a ella.
@@ -81,7 +93,7 @@ function inviteLink(code) {
 
 // La API solo devuelve JSON: no tiene por que cargar nada ni dejarse embeber.
 app.use(helmet({ contentSecurityPolicy: { useDefaults: false, directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } } }));
-app.use(cors({ origin: clientOrigin, credentials: true }));
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 // Los audios cifrados viajan como base64 dentro del JSON, asi que /api/messages necesita
 // mas margen que el resto. Va primero a proposito: marca el body como parseado y el
 // parser global de 1mb lo saltea, de modo que ninguna otra ruta hereda el limite grande.
@@ -91,6 +103,31 @@ const sinLimite = (req, res, next) => next();
 const limiter = (options) => (rateLimitEnabled ? rateLimit(options) : sinLimite);
 
 app.use(limiter({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }));
+
+const relay = createRelay({
+  allowedOrigins,
+  push: vapidPublicKey && vapidPrivateKey ? { publicKey: vapidPublicKey, send: (subscription, payload) => webpush.sendNotification(subscription, payload) } : null
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const path = new URL(req.url, 'http://localhost').pathname;
+  if (path === '/relay') return relay.handleUpgrade(req, socket, head);
+  if (path === '/ws' && legacyEnabled) return wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+  socket.destroy();
+});
+
+app.get('/api/relay/info', (req, res) => res.json({ v: 2, vapidPublicKey, legacy: legacyEnabled }));
+
+// Volcado del buzon para los e2e. Nunca en produccion, aunque alguien deje la variable puesta.
+if (process.env.RELAY_DEBUG === '1' && process.env.NODE_ENV !== 'production') {
+  app.get('/api/relay/debug/dump', (req, res) => res.json({ stats: relay.stats(), mailboxes: relay.dump() }));
+}
+
+// Sin base de datos la API v1 queda retirada: solo responde la salud y el relay.
+if (!legacyEnabled) {
+  app.use('/api', (req, res, next) => (req.path === '/health' || req.path.startsWith('/relay') ? next() : res.status(410).json({ error: 'La versión anterior de OTPChat fue retirada' })));
+}
 
 const loginLimiter = limiter({ windowMs: 15 * 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
 const registerLimiter = limiter({ windowMs: 60 * 60_000, limit: 3, standardHeaders: true, legacyHeaders: false });
@@ -1029,14 +1066,17 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-await loadStore();
-// Re-asienta quien es superadmin desde la config antes de aceptar cualquier request.
-await seedSuperadmin();
-// Sin catch, un fallo de escritura aca queda como rechazo sin manejar y Node baja
-// el proceso entero. Preferimos loguear y seguir con el proximo tick.
-const cleanupTimer = setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
-server.listen(port, () => console.log(`OTPChat API on http://localhost:${port}`));
+let cleanupTimer;
+if (legacyEnabled) {
+  await loadStore();
+  // Re-asienta quien es superadmin desde la config antes de aceptar cualquier request.
+  await seedSuperadmin();
+  // Sin catch, un fallo de escritura aca queda como rechazo sin manejar y Node baja
+  // el proceso entero. Preferimos loguear y seguir con el proximo tick.
+  cleanupTimer = setInterval(() => void cleanupExpiredMessages().catch((err) => console.error('cleanupExpiredMessages:', err)), 30_000);
+}
+server.listen(port, () => console.log(`OTPChat on http://localhost:${port} (relay v2${legacyEnabled ? ' + API v1 con base de datos' : ', sin base de datos'})`));
 
-// Exportados para que los tests de API puedan cerrar el proceso: el listen y el interval
-// dejan el event loop vivo y sin esto "node --test" nunca termina.
-export { server, wss, cleanupTimer, seedSuperadmin };
+// Exportados para que los tests puedan cerrar el proceso: el listen y los intervals dejan
+// el event loop vivo y sin esto "node --test" nunca termina.
+export { server, wss, cleanupTimer, seedSuperadmin, relay };

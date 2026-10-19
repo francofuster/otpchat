@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OTPChat</string>
+    <string name="title_activity_main">OTPChat</string>
+    <string name="package_name">com.fustermicrosystems.otpchat</string>
+    <string name="custom_url_scheme">com.fustermicrosystems.otpchat</string>
+</resources>

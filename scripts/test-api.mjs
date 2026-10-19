@@ -5,6 +5,8 @@ import { usarBaseDescartable } from './test-env.mjs';
 
 const database = usarBaseDescartable('otpchat_api');
 process.env.RATE_LIMIT_ENABLED = 'false';
+// La API v1 necesita la base local descartable (sin DATABASE_URL arrancaria solo el relay).
+process.env.LEGACY_API = '1';
 // Admin designado por env: nombre reservado + password de bootstrap para sembrarlo.
 process.env.SUPERADMIN_USERNAME = 'admintest';
 process.env.SUPERADMIN_PASSWORD = 'AdminBoot1!';

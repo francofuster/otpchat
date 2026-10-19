@@ -7,5 +7,10 @@
     "target": "ws://localhost:4900",
     "secure": false,
     "ws": true
+  },
+  "/relay": {
+    "target": "ws://localhost:4900",
+    "secure": false,
+    "ws": true
   }
 }

@@ -1,28 +1,39 @@
 import { defineConfig } from 'cypress';
-import { randomBytes } from 'node:crypto';
+import WebSocket from 'ws';
+import { OtpNode } from './src/core/node.js';
+import { RelayClient } from './src/core/relay-client.js';
+import { createMemoryStore } from './src/core/memory-store.js';
 
-const apiBase = process.env.E2E_API_BASE || 'http://localhost:4900';
-const password = 'Test-1234';
+// La "otra persona" de cada test es un nodo bot que corre aca, en Node, con el mismo nucleo
+// que la app y contra el mismo relay. Asi cada escenario prueba dos dispositivos reales
+// hablando por la red, sin servidor con base de datos en el medio.
+const relayHttp = process.env.E2E_API_BASE || 'http://localhost:4900';
+const relayUrl = `${relayHttp.replace(/^http/, 'ws')}/relay`;
+const siteOrigin = process.env.E2E_BASE_URL || 'http://localhost:5900';
+const bots = new Map();
+let nextBot = 0;
 
-async function api(path, { method = 'GET', token, body } = {}) {
-  const res = await fetch(`${apiBase}${path}`, {
-    method,
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${text.slice(0, 200)}`);
-  return text ? JSON.parse(text) : {};
+function bot(id) {
+  const node = bots.get(id);
+  if (!node) throw new Error(`bot ${id} no existe`);
+  return node;
 }
 
-const nombreUnico = (prefijo) => `${prefijo}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const payloadOf = (link) => String(link).split('#/i/')[1];
 
-const registrar = (username) =>
-  api('/api/auth/register', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
+async function waitFor(check, timeout = 8000) {
+  const started = Date.now();
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() - started > timeout) throw new Error('timeout esperando al bot');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 
 export default defineConfig({
   e2e: {
-    baseUrl: process.env.E2E_BASE_URL || 'http://localhost:5900',
+    baseUrl: siteOrigin,
     supportFile: 'cypress/support/e2e.js',
     specPattern: 'cypress/e2e/**/*.cy.js',
     video: false,
@@ -30,117 +41,105 @@ export default defineConfig({
     defaultCommandTimeout: 10000,
     setupNodeEvents(on) {
       on('task', {
-        // Arma un chat entre dos usuarios nuevos y le manda "mensajes" no leidos al
-        // primero. Corre en Node, no en el browser: sembrar por HTTP es mucho mas rapido
-        // que hacer clicks, y cada escenario usa usuarios unicos para no pisarse.
-        async crearChat({ mensajes = 0 } = {}) {
-          const nombreA = nombreUnico('e2e_a');
-          const nombreB = nombreUnico('e2e_b');
-          const a = await registrar(nombreA);
-          const b = await registrar(nombreB);
-
-          const { invitation } = await api('/api/invitations/contact', { method: 'POST', token: a.token });
-          const { conversationId } = await api(`/api/invitations/${invitation.code}/accept`, { method: 'POST', token: b.token });
-
-          for (let i = 0; i < mensajes; i++) {
-            await api('/api/messages', {
-              method: 'POST',
-              token: b.token,
-              // El contenido real no importa: sin la llave local el cliente muestra el
-              // aviso de "falta la llave", pero el CONTEO de no leidos es del servidor.
-              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`e2e ${i}`), keyStep: 1, keyVersion: 1 } }
-            });
-          }
-          return { usuarioA: nombreA, usuarioB: nombreB, password, conversationId };
+        async 'bot:create'({ name }) {
+          const node = new OtpNode({ store: createMemoryStore(), transport: new RelayClient({ url: relayUrl, WebSocketImpl: WebSocket }), origin: siteOrigin, waitMs: 8000 });
+          await node.init();
+          await node.createIdentity(name);
+          await node.connect();
+          const id = `bot${++nextBot}`;
+          bots.set(id, node);
+          return id;
         },
-
-        // Manda mensajes adicionales a un chat ya creado, como si llegaran de la otra persona.
-        async enviarComo({ username, conversationId, mensajes = 1 }) {
-          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
-          for (let i = 0; i < mensajes; i++) {
-            await api('/api/messages', {
-              method: 'POST',
-              token: sesion.token,
-              body: { scope: 'contact', targetId: conversationId, encrypted: { iv: 'aaaa', salt: 'bbbb', ciphertext: btoa(`extra ${i}`), keyStep: 1, keyVersion: 1 } }
-            });
+        async 'bot:invite'({ id, kind = 'contact', chatId }) {
+          const { link } = await bot(id).createInvite(kind, chatId);
+          return link.replace(/^https?:\/\/[^/]+/, siteOrigin);
+        },
+        async 'bot:accept'({ id, link }) {
+          return bot(id).acceptInvite(payloadOf(link));
+        },
+        async 'bot:tryAccept'({ id, link }) {
+          try {
+            await bot(id).acceptInvite(payloadOf(link));
+            return 'aceptada';
+          } catch (err) {
+            return err.message;
           }
+        },
+        async 'bot:createGroup'({ id, name }) {
+          return bot(id).createGroup(name);
+        },
+        async 'bot:send'({ id, chatId, text }) {
+          const node = bot(id);
+          const target = chatId || node.listChats()[0]?.id;
+          await node.sendText(target, text);
+          return target;
+        },
+        async 'bot:trySend'({ id, chatId, text }) {
+          try {
+            await bot(id).sendText(chatId, text);
+            return 'ok';
+          } catch (err) {
+            return err.message;
+          }
+        },
+        async 'bot:messages'({ id, chatId }) {
+          const node = bot(id);
+          const target = chatId || node.listChats()[0]?.id;
+          return target ? node.messages(target).map((m) => ({ text: m.text, mine: m.mine, expiresAt: m.expiresAt, system: !!m.system })) : [];
+        },
+        async 'bot:waitMessage'({ id, text, chatId }) {
+          const node = bot(id);
+          return waitFor(() => {
+            const chats = chatId ? [chatId] : node.listChats().map((c) => c.id);
+            return chats.some((c) => node.messages(c).some((m) => m.text === text));
+          });
+        },
+        async 'bot:chats'({ id }) {
+          return bot(id).listChats();
+        },
+        async 'bot:waitChat'({ id, kind }) {
+          const node = bot(id);
+          return waitFor(() => node.listChats().find((c) => !kind || c.kind === kind) || null);
+        },
+        async 'bot:setRole'({ id, chatId, memberName, role }) {
+          const node = bot(id);
+          const member = node.members(chatId).find((m) => m.name === memberName);
+          await node.setRole(chatId, [member.userId], role);
           return null;
         },
-
-        // Un usuario suelto, para los flujos donde la otra persona ya existe.
-        async crearUsuario() {
-          const username = nombreUnico('e2e_u');
-          await registrar(username);
-          return { username, password };
-        },
-
-        // Grupo ya armado con miembros. Sirve para probar la pantalla de miembros sin
-        // gastar medio test en el alta. Ojo: el admin queda SIN la llave local del grupo,
-        // asi que con este grupo no se puede generar el link de invitacion desde la UI.
-        async crearGrupoConMiembros({ miembros = 0, nombre } = {}) {
-          const admin = nombreUnico('e2e_adm');
-          const sesionAdmin = await registrar(admin);
-          const nombreGrupo = nombre || `Grupo ${Math.random().toString(36).slice(2, 7)}`;
-          const { group } = await api('/api/groups', { method: 'POST', token: sesionAdmin.token, body: { name: nombreGrupo } });
-
-          const nombres = [];
-          for (let i = 0; i < miembros; i++) {
-            const miembro = nombreUnico('e2e_m');
-            const sesion = await registrar(miembro);
-            const { invitation } = await api(`/api/groups/${group.id}/invite`, { method: 'POST', token: sesionAdmin.token });
-            await api(`/api/invitations/${invitation.code}/accept`, { method: 'POST', token: sesion.token });
-            nombres.push(miembro);
-          }
-          return { admin, nombreGrupo, groupId: group.id, miembros: nombres };
-        },
-
-        // Lo que ve el servidor para ese usuario, para contrastar contra lo que muestra la UI.
-        async estadoDe({ username }) {
-          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
-          const { contacts, groups } = await api('/api/bootstrap', { token: sesion.token });
-          return {
-            contactos: contacts.map((c) => c.other.username),
-            grupos: groups.map((g) => ({ nombre: g.name, rol: g.role }))
-          };
-        },
-
-        // Invitacion lista para aceptar, con la llave ya colgada del hash.
-        // La llave es opaca para el servidor (se genera y se guarda solo en el cliente),
-        // asi que armarla aca produce un link identico al que fabrica la UI.
-        async crearInvitacionConLlave() {
-          const anfitrion = nombreUnico('e2e_anf');
-          const invitado = nombreUnico('e2e_inv');
-          const sesion = await registrar(anfitrion);
-          await registrar(invitado);
-          const { invitation } = await api('/api/invitations/contact', { method: 'POST', token: sesion.token });
-          const llave = randomBytes(32).toString('base64url');
-          return { anfitrion, invitado, code: invitation.code, llave, link: `${invitation.link}?key=${llave}&kv=1` };
-        },
-
-        // Lo que quedo realmente guardado en el servidor, sin descifrar nada.
-        async mensajesCrudosDe({ username, scope = 'contact', targetId }) {
-          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
-          const { messages } = await api(`/api/messages/${scope}/${targetId}`, { token: sesion.token });
-          return messages.map((m) => ({
-            encrypted: m.encrypted,
-            expiresAt: m.expiresAt,
-            createdAt: m.createdAt,
-            remitente: m.sender?.username ?? null,
-            crudo: JSON.stringify(m)
-          }));
-        },
-
-        // Fija el temporizador de un usuario para un chat, sin pasar por la UI.
-        async fijarTemporizador({ username, conversationId, segundos }) {
-          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
-          await api(`/api/conversations/${conversationId}/timer`, { method: 'PATCH', token: sesion.token, body: { timerSeconds: segundos } });
+        async 'bot:remove'({ id, chatId, memberName }) {
+          const node = bot(id);
+          const member = await waitFor(() => node.members(chatId).find((m) => m.name === memberName));
+          await node.removeMembers(chatId, [member.userId]);
           return null;
         },
-
-        async noLeidosSegunServidor({ username, conversationId }) {
-          const sesion = await api('/api/auth/login', { method: 'POST', body: { username, password, fingerprint: `fp-${username}` } });
-          const { contacts } = await api('/api/bootstrap', { token: sesion.token });
-          return contacts.find((c) => c.conversationId === conversationId)?.unreadCount ?? null;
+        async 'bot:settings'({ id, chatId, settings }) {
+          await bot(id).setGroupSettings(chatId, settings);
+          return null;
+        },
+        async 'bot:offline'({ id }) {
+          bot(id).transport.close();
+          await new Promise((r) => setTimeout(r, 200));
+          return null;
+        },
+        async 'bot:online'({ id }) {
+          const node = bot(id);
+          node.transport.closed = false;
+          node.transport.open();
+          await waitFor(() => node.transport.connected);
+          return null;
+        },
+        async 'bot:device'({ id }) {
+          return bot(id).device.deviceId;
+        },
+        async 'relay:dump'() {
+          const res = await fetch(`${relayHttp}/api/relay/debug/dump`);
+          return res.json();
+        },
+        async 'bots:stop'() {
+          for (const node of bots.values()) node.transport.close();
+          bots.clear();
+          return null;
         }
       });
     }

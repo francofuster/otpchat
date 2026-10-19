@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Candado de OTPChat (mismo dibujo que public/icons/icon.svg, sin filtros). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group android:pivotX="256" android:pivotY="256" android:scaleX="0.62" android:scaleY="0.62" android:translateY="-6">
+        <path
+            android:pathData="M170,230v-48c0,-52 38,-94 86,-94s86,42 86,94v48"
+            android:strokeColor="#F2A65A"
+            android:strokeWidth="38"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M176,216h160a46,46 0,0 1,46 46v104a46,46 0,0 1,-46 46h-160a46,46 0,0 1,-46 -46v-104a46,46 0,0 1,46 -46z"
+            android:fillColor="#F2A65A" />
+        <path
+            android:pathData="M229,310a27,27 0,1 1,54 0a27,27 0,1 1,-54 0z"
+            android:fillColor="#160D0A" />
+        <path
+            android:pathData="M256,334v46"
+            android:strokeColor="#160D0A"
+            android:strokeWidth="22"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M245,306a11,11 0,1 1,22 0a11,11 0,1 1,-22 0z"
+            android:fillColor="#FFD6A3" />
+    </group>
+</vector>

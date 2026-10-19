@@ -24,6 +24,7 @@ before(async () => {
 after(async () => {
   clearInterval(backend.cleanupTimer);
   backend.wss.close();
+  backend.relay.close();
   await new Promise((resolve) => backend.server.close(resolve));
   await AppDataSource.destroy();
 });

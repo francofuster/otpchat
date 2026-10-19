@@ -1,35 +1,50 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AuthService } from './auth.service';
-import { ApiService } from './api.service';
-import { SecretService } from './secret.service';
+import { NodeService } from './node.service';
+import { UiService } from './ui.service';
+import { pendingInviteKey } from './shell.component';
+import { decodeInvite } from '../core/protocol.js';
 
+// Abre un link de invitacion (#/i/...). La invitacion se resuelve directo con el dispositivo
+// de quien la muestra: si ese QR ya no esta en pantalla, no hay a quien pedirle nada.
 @Component({
   selector: 'app-invite',
   standalone: true,
   template: `
     <main class="invite">
-      @if (!auth.ready()) {
-        <section class="box">Cargando invitacion...</section>
-      } @else if (!auth.user()) {
-        <section class="box">
-          <h1>Entra para aceptar</h1>
-          <p>Inicia sesion o registrate. Despues volves automaticamente a esta invitacion.</p>
-          <a href="/#/">Ir a OTPChat</a>
-        </section>
-      } @else if (invite()) {
-        <section class="box">
-          <h1>{{ invite().inviter.username }} te invita a chatear</h1>
-          <p>{{ invite().group ? 'Grupo: ' + invite().group.name : 'Chat privado 1 a 1 cifrado' }}</p>
-          @if (error()) { <p class="error">{{ error() }}</p> }
-          <div class="actions">
-            <button class="primary" (click)="accept()">Aceptar</button>
-            <button (click)="reject()">Rechazar</button>
-          </div>
-        </section>
-      } @else {
-        <section class="box">{{ error() || 'Buscando invitacion...' }}</section>
-      }
+      <section class="box">
+        @switch (step()) {
+          @case ('loading') { <p>Buscando la invitación…</p> }
+          @case ('legacy') {
+            <h1>Link de la versión anterior</h1>
+            <p>Este link es de una versión de OTPChat que ya no se usa. Pedí un QR nuevo.</p>
+            <a href="/#/">Ir a OTPChat</a>
+          }
+          @case ('link') {
+            <h1>Vincular este dispositivo</h1>
+            <p>Vas a recibir la cuenta y los chats del dispositivo que muestra el QR. Hacelo solo con tus propios dispositivos.</p>
+            @if (error()) { <p class="error">{{ error() }}</p> }
+            <div class="actions">
+              <button class="primary" [disabled]="busy()" (click)="acceptLink()">{{ busy() ? 'Vinculando…' : 'Vincular' }}</button>
+              <a href="/#/">Cancelar</a>
+            </div>
+          }
+          @case ('ready') {
+            <h1>{{ inviterName() }} te invita</h1>
+            <p>{{ kind() === 'g' ? 'A un grupo cifrado de punta a punta.' : 'A un chat privado cifrado de punta a punta.' }}</p>
+            @if (error()) { <p class="error">{{ error() }}</p> }
+            <div class="actions">
+              <button class="primary" [disabled]="busy()" (click)="accept()">{{ busy() ? 'Esperando respuesta…' : 'Aceptar' }}</button>
+              <button [disabled]="busy()" (click)="reject()">Rechazar</button>
+            </div>
+          }
+          @default {
+            <h1>No se pudo abrir</h1>
+            <p>{{ error() }}</p>
+            <a href="/#/">Ir a OTPChat</a>
+          }
+        }
+      </section>
     </main>
   `,
   styles: [`
@@ -38,63 +53,100 @@ import { SecretService } from './secret.service';
     h1 { margin: 0 0 10px; }
     p { color: var(--muted); }
     .error { color: var(--danger); font-weight: 600; }
-    .actions { display: flex; gap: 10px; }
-    button, a { border-radius: 8px; padding: 11px 14px; background: color-mix(in srgb, var(--panel) 78%, var(--blue) 22%); color: var(--ink); text-decoration: none; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    button, a { border-radius: 8px; padding: 11px 14px; background: color-mix(in srgb, var(--panel) 78%, var(--blue) 22%); color: var(--ink); text-decoration: none; border: 0; font: inherit; cursor: pointer; }
     .primary { background: var(--blue); color: white; }
   `]
 })
 export class InviteComponent implements OnInit {
-  invite = signal<any>(null);
+  step = signal<'loading' | 'ready' | 'link' | 'legacy' | 'error'>('loading');
+  inviterName = signal('');
+  kind = signal<'c' | 'g' | 'l'>('c');
   error = signal('');
-  private code = '';
-  private key = '';
-  private keyVersion = 1;
-  private readonly pendingInviteKey = 'otpchat_pending_invite';
+  busy = signal(false);
+  private payload = '';
 
-  constructor(
-    public auth: AuthService,
-    private api: ApiService,
-    private secrets: SecretService,
-    private route: ActivatedRoute,
-    private router: Router
-  ) {}
+  constructor(private node: NodeService, private ui: UiService, private route: ActivatedRoute, private router: Router) {}
 
   async ngOnInit() {
-    this.code = this.route.snapshot.paramMap.get('code') || '';
-    this.key = this.route.snapshot.queryParamMap.get('key') || '';
-    this.keyVersion = Number(this.route.snapshot.queryParamMap.get('kv') || 1);
-    const wait = setInterval(async () => {
-      if (!this.auth.ready()) return;
-      clearInterval(wait);
-      if (!this.auth.user()) {
-        localStorage.setItem(this.pendingInviteKey, JSON.stringify({ code: this.code, key: this.key, keyVersion: this.keyVersion }));
+    if (this.route.snapshot.paramMap.get('code')) {
+      this.step.set('legacy');
+      return;
+    }
+    this.payload = this.route.snapshot.paramMap.get('payload') || '';
+    const invite = decodeInvite(this.payload);
+    if (!invite) {
+      this.error.set('El link de invitación está incompleto o dañado.');
+      this.step.set('error');
+      return;
+    }
+    this.kind.set(invite.kind);
+    await this.node.start();
+    if (invite.kind === 'l') {
+      if (this.node.node.hasIdentity()) {
+        this.error.set('Este dispositivo ya tiene una cuenta. Para vincularlo, primero borrá la cuenta desde Configuración.');
+        this.step.set('error');
         return;
       }
-      try {
-        this.invite.set(await this.api.getInvite(this.code));
-      } catch {
-        this.error.set('La invitacion vencio, fue cancelada o no existe.');
-        setTimeout(() => void this.router.navigate(['/'], { replaceUrl: true }), 1200);
-      }
-    }, 100);
+      this.step.set('link');
+      return;
+    }
+    if (!this.node.node.hasIdentity()) {
+      // Primero se crea la cuenta; despues el shell vuelve a esta invitacion.
+      localStorage.setItem(pendingInviteKey, this.payload);
+      this.ui.toast('Creá tu cuenta para aceptar la invitación');
+      await this.router.navigate(['/'], { replaceUrl: true });
+      return;
+    }
+    await this.waitConnected();
+    try {
+      const info = await this.node.node.inspectInvite(this.payload);
+      this.inviterName.set(info.inviter.name);
+      this.step.set('ready');
+    } catch (err: any) {
+      this.error.set(err.message || 'La invitación venció.');
+      this.step.set('error');
+    }
+  }
+
+  private async waitConnected() {
+    for (let i = 0; i < 80 && !this.node.connected(); i++) await new Promise((r) => setTimeout(r, 100));
   }
 
   async accept() {
-    if (!this.key) {
-      this.error.set('Esta invitacion no trae llave de cifrado. Pide que te envien un nuevo link o QR.');
-      return;
+    this.busy.set(true);
+    this.error.set('');
+    try {
+      const chatId = await this.node.node.acceptInvite(this.payload);
+      this.node.refresh();
+      this.ui.toast(this.kind() === 'g' ? 'Te uniste al grupo' : 'Invitación aceptada');
+      await this.router.navigate(['/'], { state: { open: chatId }, replaceUrl: true });
+    } catch (err: any) {
+      this.error.set(err.message || 'No se pudo aceptar');
+    } finally {
+      this.busy.set(false);
     }
-    const res = await this.api.acceptInvite(this.code);
-    if (res.conversationId) this.secrets.save('contact', res.conversationId, this.key, this.keyVersion);
-    if (res.groupId) this.secrets.save('group', res.groupId, this.key, Number(res.keyVersion || this.keyVersion));
-    localStorage.removeItem(this.pendingInviteKey);
-    await this.router.navigate(['/'], { state: { open: res.conversationId || res.groupId }, replaceUrl: true });
   }
 
   async reject() {
-    await this.api.rejectInvite(this.code);
-    localStorage.removeItem(this.pendingInviteKey);
-    history.replaceState(null, '', '/#/');
+    await this.node.node.rejectInvite(this.payload).catch(() => {});
     await this.router.navigate(['/'], { replaceUrl: true });
+  }
+
+  async acceptLink() {
+    this.busy.set(true);
+    this.error.set('');
+    await this.waitConnected();
+    try {
+      await this.node.node.acceptLinkInvite(this.payload);
+      this.node.refresh();
+      this.node.status.set('ready');
+      this.ui.toast('Dispositivo vinculado');
+      await this.router.navigate(['/'], { replaceUrl: true });
+    } catch (err: any) {
+      this.error.set(err.message || 'No se pudo vincular');
+    } finally {
+      this.busy.set(false);
+    }
   }
 }

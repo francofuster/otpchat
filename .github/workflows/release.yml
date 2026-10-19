@@ -1,0 +1,115 @@
+# Compila las apps nativas y las publica en un release de GitHub.
+#  - Android: APK firmado con la clave guardada en los secretos del repo.
+#  - Windows: ejecutable portable de Electron.
+# Se dispara al subir un tag v* (o a mano desde Actions).
+name: Release apps
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag del release (ej. v2.0.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  OTPCHAT_API_BASE: https://otpchat-api.onrender.com
+  OTPCHAT_SITE_URL: https://otpchat.vercel.app
+  CYPRESS_INSTALL_BINARY: '0'
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Clave de firma
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then echo "Falta el secreto ANDROID_KEYSTORE_B64" >&2; exit 1; fi
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/otpchat.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/otpchat.jks" >> "$GITHUB_ENV"
+      - name: Compilar APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          OTPCHAT_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          export OTPCHAT_VERSION_NAME="${TAG#v}"
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ../otpchat-android.apk
+      - name: Verificar firma
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs otpchat-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: otpchat-android.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Copiar la web a la app
+        shell: bash
+        run: |
+          mkdir -p desktop/app
+          cp -r dist/otpchat/browser/* desktop/app/
+      - name: Compilar ejecutable
+        working-directory: desktop
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          npm run dist
+          cp release/otpchat-windows.exe ../otpchat-windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: otpchat-windows.exe
+
+  release:
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la assets
+          (cd assets && sha256sum otpchat-android.apk otpchat-windows.exe > SHA256SUMS.txt)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/otpchat-android.apk assets/otpchat-windows.exe assets/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" assets/otpchat-android.apk assets/otpchat-windows.exe assets/SHA256SUMS.txt --title "OTPChat $TAG" --notes-file docs/RELEASE-NOTES.md
+          fi

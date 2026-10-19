@@ -1,6 +1,6 @@
 import './commands';
 
-// La app guarda llaves de chat y preferencias en localStorage. Cada test arranca limpio.
-beforeEach(() => {
-  cy.clearLocalStorage();
+// Cada test arranca con bots nuevos: los de un test anterior se desconectan.
+afterEach(() => {
+  cy.task('bots:stop');
 });

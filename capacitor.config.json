@@ -1,0 +1,13 @@
+{
+  "appId": "com.fustermicrosystems.otpchat",
+  "appName": "OTPChat",
+  "webDir": "dist/otpchat/browser",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

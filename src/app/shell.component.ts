@@ -2,19 +2,27 @@ import { CommonModule, DatePipe } from '@angular/common';
 import { Component, ElementRef, OnInit, ViewChild, computed, effect, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { ApiService } from './api.service';
-import { AuthService } from './auth.service';
-import { CryptoService } from './crypto.service';
-import { SecretService } from './secret.service';
-import { ChatMessage, Contact, Group, GroupMember } from './types';
+import { NodeService } from './node.service';
+import { UiService } from './ui.service';
+import { PrivacyService } from './privacy.service';
+import { androidDownloadUrl } from './runtime-config';
+import { closeLegacySession, hasLegacySession, importLegacyChats, LegacyChat } from './legacy-import';
+import { TIMER_OPTIONS } from '../core/node.js';
+import { b64url, fromB64url } from '../core/encoding.js';
 
-const timers = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
-// Tope de grabacion. Acota el payload cifrado que viaja en el JSON del POST.
 const maxRecordingMs = 120_000;
 const minRecordingMs = 700;
-// Cada cuanto se regenera el QR/link de invitacion mientras esta a la vista. El anterior se
-// cancela, asi un codigo filtrado deja de servir a los pocos segundos en vez de durar horas.
+// Cada cuanto se regenera el QR de invitacion mientras esta a la vista. El anterior deja de
+// servir en el acto: un codigo filtrado vale como mucho unos segundos.
 const inviteRefreshMs = 30_000;
+export const pendingInviteKey = 'otpchat_pending_invite_v2';
+
+type Sheet = 'contact' | 'group' | 'actions' | 'members' | 'settings' | 'link' | 'safety' | 'paste' | null;
+
+interface ViewMessage {
+  id: string; mine: boolean; senderName: string; ts: number; kind: string; text: string;
+  audio?: string | null; mime?: string | null; durationMs?: number | null; expiresAt?: number | null; system?: boolean;
+}
 
 @Component({
   selector: 'app-shell',
@@ -25,52 +33,57 @@ const inviteRefreshMs = 30_000;
 })
 export class ShellComponent implements OnInit {
   @ViewChild('scrollbox') scrollbox?: ElementRef<HTMLElement>;
-  username = '';
-  password = '';
-  repeatPassword = '';
-  newPassword = '';
-  accountUsername = '';
-  accountPassword = '';
-  accountCurrentPassword = '';
-  showPassword = false;
-  showRepeatPassword = false;
-  showNewPassword = false;
-  showAccountPassword = false;
-  notificationsEnabled = signal(localStorage.getItem('otpchat_notifications') === 'on');
-  notificationPermission = signal(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
-  pushSubscribed = signal(localStorage.getItem('otpchat_push_subscribed') === 'on');
-  deferredInstallPrompt = signal<any>(null);
-  standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
-  disclaimerAccepted = signal(localStorage.getItem('otpchat_disclaimer_accepted') === '1');
-  darkMode = signal(localStorage.getItem('otpchat_theme') !== 'light');
-  authMode: 'login' | 'register' = 'login';
-  authError = signal('');
-  authSubmitting = signal(false);
-  contacts = signal<Contact[]>([]);
-  groups = signal<Group[]>([]);
-  messages = signal<ChatMessage[]>([]);
+  timers = TIMER_OPTIONS;
+  onboardingMode: 'new' | 'restore' | 'link' = 'new';
+  nameInput = '';
+  restorePassphrase = '';
+  restoreFile: any = null;
+  pasteLink = '';
+  backupPassphrase = '';
+  accountName = '';
+  groupName = '';
+  draft = '';
+  panel: 'list' | 'chat' = 'list';
+  busy = signal(false);
+  onboardingError = signal('');
+  sheet = signal<Sheet>(null);
+  selectedId = signal<string | null>(null);
+  legacyOpen = signal<LegacyChat | null>(null);
+  invite = signal<{ link: string; qr: string; expiresAt: number; kind: 'contact' | 'group' | 'link' } | null>(null);
+  safety = signal<string[] | null>(null);
+  members = signal<any[]>([]);
+  selectedMembers = signal<Set<string>>(new Set());
   showJumpToLatest = signal(false);
-  selected = signal<{ scope: 'contact' | 'group'; id: string; title: string; secret: string; keyVersion: number; timerSeconds: number; role?: string; founderId?: string; joinedAt?: string; membersCanWrite?: boolean } | null>(null);
   recording = signal(false);
   recordingMs = signal(0);
   sendingAudio = signal(false);
   playingId = signal<string | null>(null);
   playbackPosition = signal(0);
-  draft = '';
-  panel: 'list' | 'chat' = 'list';
-  sheet = signal<'contact' | 'group' | 'actions' | 'members' | 'admin' | 'settings' | null>(null);
-  invite = signal<any>(null);
-  groupName = '';
-  groupCreating = signal(false);
-  badge = signal<Record<string, number>>({});
-  adminStats = signal<any>(null);
-  adminUsers = signal<any[]>([]);
-  groupMembers = signal<GroupMember[]>([]);
-  selectedMembers = signal<Set<string>>(new Set());
-  selectedUsers = signal<Set<string>>(new Set());
-  tempPassword = signal('');
-  timers = timers;
-  isAdminRoute = computed(() => location.hash.includes('/admin'));
+  legacyAvailable = signal(hasLegacySession());
+  legacyProgress = signal('');
+  notificationsEnabled = signal(this.readPref('otpchat_notifications') === 'on');
+  deferredInstallPrompt = signal<any>(null);
+  standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
+  disclaimerAccepted = signal(this.readPref('otpchat_disclaimer_accepted') === '1');
+  darkMode = signal(this.readPref('otpchat_theme') !== 'light');
+  androidUrl = androidDownloadUrl();
+
+  selected = computed(() => {
+    const id = this.selectedId();
+    return id ? this.node.chats().find((c) => c.id === id) || null : null;
+  });
+  messages = computed<ViewMessage[]>(() => {
+    this.node.revision();
+    const id = this.selectedId();
+    return id ? (this.node.node.messages(id) as ViewMessage[]) : [];
+  });
+  contacts = computed(() => this.node.chats().filter((c) => c.kind === 'contact'));
+  groups = computed(() => this.node.chats().filter((c) => c.kind === 'group'));
+  devices = computed(() => {
+    this.node.revision();
+    return this.node.node?.ownDevices?.() || [];
+  });
+
   private audioUrls = new Map<string, string>();
   private player?: HTMLAudioElement;
   private recorder?: MediaRecorder;
@@ -80,55 +93,69 @@ export class ShellComponent implements OnInit {
   private recordingStartedAt = 0;
   private recordedMs = 0;
   private recordingCancelled = false;
-  // El chat al que apuntaba la grabacion cuando arranco. MediaRecorder entrega el blob en
-  // onstop, un rato despues del click: sin esto, cambiar de chat en ese intervalo mandaria
-  // el audio a la conversacion equivocada.
-  private recordingChat?: { scope: 'contact' | 'group'; id: string; secret: string; keyVersion: number };
-  // Contexto de la invitacion abierta, para poder regenerarla cada 30s. En contacto se reusa
-  // el mismo secreto durante toda la rotacion: asi cualquier codigo que el invitado alcance a
-  // escanear mapea a un secreto que el emisor tiene guardado localmente.
+  private recordingChat?: string;
   private inviteRefreshTimer?: ReturnType<typeof setInterval>;
-  private inviteContext: { scope: 'contact' } | { scope: 'group'; id: string; secret: string; keyVersion: number } | null = null;
-  private inviteSecret = '';
+  private inviteToken = '';
+  private lastSeenRevision = new Map<string, number>();
 
-  constructor(
-    public auth: AuthService,
-    public crypto: CryptoService,
-    public api: ApiService,
-    private secrets: SecretService,
-    private router: Router
-  ) {
-    // Arranca y corta la rotacion del QR segun este visible o no una invitacion. Cubre
-    // todas las formas de cerrar la hoja (X, click afuera, aceptacion), sin cablear cada una.
+  constructor(public node: NodeService, public ui: UiService, public privacy: PrivacyService, private router: Router) {
     effect(() => {
-      const mostrandoInvite = (this.sheet() === 'contact' || this.sheet() === 'group') && !!this.invite();
-      if (mostrandoInvite && !this.inviteRefreshTimer) {
-        this.inviteRefreshTimer = setInterval(() => void this.refreshInvite(), inviteRefreshMs);
-      } else if (!mostrandoInvite && this.inviteRefreshTimer) {
-        this.stopInviteRotation();
+      const mostrando = (this.sheet() === 'contact' || this.sheet() === 'group' || this.sheet() === 'link') && !!this.invite();
+      if (mostrando && !this.inviteRefreshTimer) this.inviteRefreshTimer = setInterval(() => void this.refreshInvite(), inviteRefreshMs);
+      else if (!mostrando && this.inviteRefreshTimer) this.stopInviteRotation();
+    });
+    // Mensajes nuevos: badge, aviso y lectura si el chat esta a la vista.
+    effect(() => {
+      const chats = this.node.chats();
+      const visible = this.selectedId();
+      for (const chat of chats) {
+        const previous = this.lastSeenRevision.get(chat.id) ?? chat.unread;
+        if (chat.unread > previous && !this.chatVisible(chat.id)) {
+          this.ui.toast('Mensaje nuevo');
+          void this.notifyNewMessage();
+        }
+        this.lastSeenRevision.set(chat.id, chat.unread);
+        if (chat.id === visible && chat.unread && this.chatVisible(chat.id)) void this.node.node.markRead(chat.id).then(() => this.node.refresh());
       }
+      if (visible && !chats.some((c) => c.id === visible)) {
+        this.selectedId.set(null);
+        this.panel = 'list';
+        if (this.sheet() !== 'settings') this.sheet.set(null);
+      }
+    });
+    effect(() => {
+      this.messages();
+      this.syncAudio();
+    });
+    // Alguien acepto el QR que esta en pantalla: se cierra y se abre el chat nuevo.
+    this.node.on('contact:accepted', ({ chatId }) => {
+      if (this.sheet() === 'contact') this.sheet.set(null);
+      this.node.refresh();
+      this.openChat(chatId);
+      this.ui.toast('Invitación aceptada');
+    });
+    this.node.on('group:joined', ({ name }) => this.ui.toast(`${name} se unió al grupo`));
+    this.privacy.onScreenshotDetected(() => {
+      const id = this.selectedId();
+      if (id) void this.node.node.reportScreenshot(id).catch(() => {});
+      this.ui.toast('Se detectó una captura de pantalla');
     });
   }
 
   async ngOnInit() {
     this.applyTheme();
-    const boot = setInterval(async () => {
-      if (!this.auth.ready()) return;
-      clearInterval(boot);
-      if (this.auth.user()) {
-        const pendingInvite = this.pendingInvite();
-        if (pendingInvite) {
-          await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
-          return;
-        }
-        // Con la clave reseteada el servidor rechaza todo salvo el cambio de clave: los chats
-        // se cargan recien despues de changePassword().
-        if (!this.auth.user()?.mustChangePassword) await this.load();
-      }
-    }, 100);
-    setInterval(() => this.pruneExpired(), 1000);
+    await this.node.start();
+    if (this.node.status() === 'ready') this.resumePendingInvite();
+    const open = history.state?.open;
+    if (open) {
+      history.replaceState({ ...history.state, open: null }, '', location.href);
+      this.openChat(open);
+    }
+    if (location.hash.includes('pushList=1')) {
+      history.replaceState(null, '', '/#/');
+      this.panel = 'list';
+    }
     window.visualViewport?.addEventListener('resize', () => document.documentElement.style.setProperty('--vvh', `${window.visualViewport?.height || window.innerHeight}px`));
-    window.addEventListener('hashchange', () => void this.handlePushNavigationFromUrl());
     window.addEventListener('beforeinstallprompt', (event) => {
       event.preventDefault();
       this.deferredInstallPrompt.set(event);
@@ -136,210 +163,338 @@ export class ShellComponent implements OnInit {
     window.addEventListener('appinstalled', () => {
       this.deferredInstallPrompt.set(null);
       this.standaloneMode.set(true);
-      this.api.toast('Acceso directo creado');
+      this.ui.toast('Acceso directo creado');
     });
   }
 
-  async login() {
-    if (this.authSubmitting()) return;
-    this.authError.set('');
-    if (this.authMode === 'register') {
-      const errors = this.passwordErrors(this.password);
-      if (errors.length) {
-        this.authError.set(`La contraseña debe tener ${errors.join(', ')}.`);
-        return;
-      }
-      if (this.password !== this.repeatPassword) {
-        this.authError.set('Las contraseñas no coinciden.');
-        return;
-      }
-    }
-    this.authSubmitting.set(true);
+  private readPref(key: string) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  private writePref(key: string, value: string) {
+    try { localStorage.setItem(key, value); } catch {}
+  }
+
+  private resumePendingInvite() {
+    const pending = this.readPref(pendingInviteKey);
+    if (!pending) return;
+    localStorage.removeItem(pendingInviteKey);
+    void this.router.navigate(['/i', pending], { replaceUrl: true });
+  }
+
+  // ── Alta ──────────────────────────────────────────────────────────────────
+
+  async createIdentity() {
+    if (this.busy()) return;
+    this.onboardingError.set('');
+    this.busy.set(true);
     try {
-      this.authMode === 'login' ? await this.auth.login(this.username, this.password) : await this.auth.register(this.username, this.password);
-      const pendingInvite = this.pendingInvite();
-      if (pendingInvite) {
-        await this.router.navigate(['/invite', pendingInvite.code], { ...(pendingInvite.key ? { queryParams: { key: pendingInvite.key, kv: pendingInvite.keyVersion || 1 } } : {}), replaceUrl: true });
-        return;
-      }
-      if (!this.auth.user()?.mustChangePassword) await this.load();
+      await this.node.createIdentity(this.nameInput);
+      this.resumePendingInvite();
     } catch (err: any) {
-      const blocked = err.error?.blockedUntil ? ` Disponible ${this.countdown(err.error.blockedUntil)}` : '';
-      this.authError.set((err.error?.error || err.message || 'No se pudo entrar') + blocked);
+      this.onboardingError.set(err.message || 'No se pudo crear la cuenta');
     } finally {
-      this.authSubmitting.set(false);
+      this.busy.set(false);
     }
   }
 
-  async changePassword() {
-    const errors = this.passwordErrors(this.newPassword);
-    if (errors.length) {
-      this.api.toast(`La contraseña debe tener ${errors.join(', ')}.`);
+  async pickBackup(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    try {
+      this.restoreFile = JSON.parse(await file.text());
+    } catch {
+      this.onboardingError.set('El archivo no es un respaldo de OTPChat');
+    }
+  }
+
+  async restoreBackup() {
+    if (this.busy() || !this.restoreFile) return;
+    this.onboardingError.set('');
+    this.busy.set(true);
+    try {
+      await this.node.node.importBackup(this.restoreFile, this.restorePassphrase);
+      this.restorePassphrase = '';
+      this.node.refresh();
+      this.node.status.set('ready');
+      this.ui.toast('Cuenta restaurada');
+    } catch (err: any) {
+      this.onboardingError.set(err.message || 'No se pudo restaurar');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  async linkFromPaste() {
+    const payload = this.extractInvite(this.pasteLink);
+    if (!payload) {
+      this.onboardingError.set('Pegá el link que muestra el otro dispositivo');
       return;
     }
-    try {
-      await this.auth.changePassword(this.newPassword);
-      this.newPassword = '';
-      await this.load();
-    } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseña');
-    }
+    this.pasteLink = '';
+    await this.router.navigate(['/i', payload]);
   }
 
-  async load() {
-    const data = await this.api.bootstrap();
-    this.contacts.set(data.contacts);
-    this.groups.set(data.groups);
-    this.badge.set(Object.fromEntries([
-      ...data.contacts.map((c) => [c.conversationId, c.unreadCount || 0] as const),
-      ...data.groups.map((g) => [g.id, g.unreadCount || 0] as const)
-    ].map(([id, count]) => [id, this.chatVisible(id) ? 0 : count] as const)));
-    this.syncSelectedFromBootstrap(data.contacts, data.groups);
-    this.api.connect((event) => void this.onSocket(event));
-    const open = history.state?.open;
-    const pushOpen = this.consumePushOpen();
-    const pushList = this.consumePushList();
-    if (open || pushOpen || pushList) history.replaceState({ ...history.state, open: null }, '', '/#/');
-    const contact = data.contacts.find((c) => c.conversationId === open);
-    const group = data.groups.find((g) => g.id === open);
-    if (contact) await this.openContact(contact);
-    if (group) await this.openGroup(group);
-    if (pushOpen?.scope === 'contact') {
-      const pushContact = data.contacts.find((c) => c.conversationId === pushOpen.id);
-      if (pushContact) await this.openContact(pushContact);
-    }
-    if (pushOpen?.scope === 'group') {
-      const pushGroup = data.groups.find((g) => g.id === pushOpen.id);
-      if (pushGroup) await this.openGroup(pushGroup);
-    }
-    if (pushList && !pushOpen) this.panel = 'list';
-    if (this.isAdminRoute() && this.auth.user()?.isSuperadmin) await this.openAdmin();
+  extractInvite(text: string) {
+    const match = String(text || '').match(/#\/i\/([A-Za-z0-9_-]+)/);
+    return match ? match[1] : /^[A-Za-z0-9_-]{40,}$/.test(text.trim()) ? text.trim() : null;
   }
 
-  async openContact(contact: Contact) {
-    const secret = this.secrets.get('contact', contact.conversationId);
-    this.selected.set({ scope: 'contact', id: contact.conversationId, title: contact.other.username, secret: secret?.secret || '', keyVersion: secret?.version || 1, timerSeconds: contact.timerSeconds });
-    await this.loadMessages();
+  async openPastedInvite() {
+    const payload = this.extractInvite(this.pasteLink);
+    if (!payload) {
+      this.ui.toast('Ese texto no es un link de invitación de OTPChat');
+      return;
+    }
+    this.pasteLink = '';
+    this.sheet.set(null);
+    await this.router.navigate(['/i', payload]);
+  }
+
+  // ── Chats ─────────────────────────────────────────────────────────────────
+
+  openChat(id: string) {
+    if (!this.node.chats().some((c) => c.id === id)) return;
+    this.legacyOpen.set(null);
+    this.selectedId.set(id);
     this.panel = 'chat';
-  }
-
-  async openGroup(group: Group) {
-    const secret = this.secrets.get('group', group.id);
-    this.selected.set({ scope: 'group', id: group.id, title: group.name, secret: secret?.secret || '', keyVersion: secret?.version || group.keyVersion || 1, timerSeconds: group.timerSeconds, role: group.role, founderId: group.founderId, joinedAt: group.joinedAt, membersCanWrite: group.membersCanWrite !== false });
-    await this.loadMessages();
-    this.panel = 'chat';
-  }
-
-  async loadMessages() {
-    const chat = this.selected();
-    if (!chat) return;
-    const res = await this.api.messages(chat.scope, chat.id);
-    const decrypted: ChatMessage[] = [];
-    for (const m of res.messages) decrypted.push(await this.decryptMessage(chat, m));
-    this.releaseAudio(new Set(decrypted.map((m) => m.id)));
-    this.messages.set(decrypted);
-    this.badge.update((b) => ({ ...b, [chat.id]: 0 }));
-    void this.markRead(chat.scope, chat.id);
+    void this.node.node.markRead(id).then(() => this.node.refresh());
+    this.node.ensurePeers(id);
     setTimeout(() => this.scrollBottom(), 40);
   }
 
-  // Unico punto donde se descifra un mensaje entrante, venga del historial o del socket.
-  // Los audios salen como bytes y quedan cacheados como blob URL para el player.
-  private async decryptMessage(chat: { scope: 'contact' | 'group'; id: string; secret: string }, message: ChatMessage): Promise<ChatMessage> {
-    const secret = this.secrets.getVersion(chat.scope, chat.id, message.encrypted.keyVersion || 1) || chat.secret;
-    if (message.kind === 'audio') {
-      const bytes = secret ? await this.crypto.decryptBytes(message.encrypted, secret) : null;
-      if (bytes) this.cacheAudio(message, bytes);
-      return { ...message, text: bytes ? '' : '[No se pudo descifrar el audio]' };
-    }
-    const text = secret ? await this.crypto.decrypt(message.encrypted, secret) : '[Falta la llave local para descifrar]';
-    return { ...message, text: this.applyKeyRotation(chat.scope, chat.id, text, message.senderId) };
+  openLegacy(chat: LegacyChat) {
+    this.selectedId.set(null);
+    this.legacyOpen.set(chat);
+    this.panel = 'chat';
+    this.syncAudio();
   }
 
   badgeLabel(count: number) {
     return count > 99 ? '+99' : String(count);
   }
 
-  private async markRead(scope: 'contact' | 'group', id: string) {
-    try {
-      await this.api.markRead(scope, id);
-    } catch {}
+  private chatVisible(id: string) {
+    return this.selectedId() === id && document.visibilityState === 'visible' && (this.panel === 'chat' || !matchMedia('(max-width: 760px)').matches);
   }
 
-  private chatVisible(id: string) {
-    return this.selected()?.id === id && (this.panel === 'chat' || !matchMedia('(max-width: 760px)').matches);
+  canWriteCurrentChat() {
+    const chat = this.selected();
+    if (!chat) return false;
+    if (chat.kind !== 'group' || chat.membersCanWrite) return true;
+    return this.canModerate(chat.role);
   }
 
   async send() {
     const chat = this.selected();
-    if (!chat || !this.draft.trim()) return;
-    if (!this.canWriteCurrentChat()) {
-      this.api.toast('Solo administradores pueden enviar mensajes');
-      return;
-    }
-    if (!chat.secret) {
-      this.api.toast('Falta la llave local de este chat. Necesitas una nueva invitacion segura.');
-      return;
-    }
     const text = this.draft.trim();
+    if (!chat || !text) return;
+    if (!this.canWriteCurrentChat()) {
+      this.ui.toast('Solo administradores pueden enviar mensajes');
+      return;
+    }
     this.draft = '';
-    const encrypted = await this.crypto.encrypt(text, chat.secret, chat.keyVersion);
-    const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
-    const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text };
-    this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
-    setTimeout(() => this.scrollBottom(), 40);
-  }
-
-  // Un miembro silenciado no ve el campo de texto, pero el permiso real lo decide el
-  // servidor en cada POST: esto es solo para no mostrarle una caja que va a rebotar.
-  canWriteCurrentChat() {
-    const chat = this.selected();
-    if (!chat) return false;
-    if (chat.scope !== 'group') return true;
-    if (chat.membersCanWrite !== false) return true;
-    return this.canModerateChat(chat);
+    try {
+      await this.node.node.sendText(chat.id, text);
+      setTimeout(() => this.scrollBottom(), 40);
+    } catch (err: any) {
+      this.draft = text;
+      this.ui.toast(err.message || 'No se pudo enviar');
+    }
   }
 
   async toggleGroupWrite(allow: boolean) {
     const chat = this.selected();
-    if (chat?.scope !== 'group' || !this.isGroupOwner(chat)) return;
+    if (chat?.kind !== 'group' || !this.isGroupOwner(chat)) return;
     try {
-      await this.api.updateGroup(chat.id, { membersCanWrite: allow });
-      this.selected.set({ ...chat, membersCanWrite: allow });
-      this.groups.update((items) => items.map((group) => group.id === chat.id ? { ...group, membersCanWrite: allow } : group));
-      this.api.toast(allow ? 'Todos pueden escribir en el grupo' : 'Solo administradores pueden escribir');
+      await this.node.node.setGroupSettings(chat.id, { membersCanWrite: allow });
+      this.ui.toast(allow ? 'Todos pueden escribir en el grupo' : 'Solo administradores pueden escribir');
     } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo cambiar el permiso');
+      this.ui.toast(err.message || 'No se pudo cambiar el permiso');
     }
   }
+
+  async setTimer(seconds: string | number) {
+    const chat = this.selected();
+    if (!chat) return;
+    await this.node.node.setTimer(chat.id, Number(seconds));
+    this.node.refresh();
+  }
+
+  async deleteCurrentChat() {
+    const chat = this.selected();
+    if (!chat) return;
+    try {
+      await this.node.node.deleteChat(chat.id);
+      this.ui.toast(chat.kind === 'group' ? 'Grupo eliminado' : 'Chat eliminado');
+    } catch (err: any) {
+      this.ui.toast(err.message);
+    }
+  }
+
+  async leaveCurrentGroup() {
+    const chat = this.selected();
+    if (chat?.kind !== 'group') return;
+    await this.node.node.leaveGroup(chat.id);
+    this.ui.toast('Saliste del grupo');
+  }
+
+  async createGroup() {
+    if (this.busy()) return;
+    this.busy.set(true);
+    try {
+      const id = await this.node.node.createGroup(this.groupName || 'Grupo OTP');
+      this.groupName = '';
+      this.sheet.set(null);
+      this.openChat(id);
+    } catch (err: any) {
+      this.ui.toast(err.message || 'No se pudo crear el grupo');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  async openMembers() {
+    const chat = this.selected();
+    if (chat?.kind !== 'group' || !this.canModerateChat(chat)) return;
+    this.members.set(this.node.node.members(chat.id));
+    this.selectedMembers.set(new Set());
+    this.sheet.set('members');
+  }
+
+  toggleMember(id: string) {
+    const next = new Set(this.selectedMembers());
+    next.has(id) ? next.delete(id) : next.add(id);
+    this.selectedMembers.set(next);
+  }
+
+  async removeSelectedMembers() {
+    const chat = this.selected();
+    const ids = [...this.selectedMembers()];
+    if (chat?.kind !== 'group' || !ids.length) return;
+    try {
+      await this.node.node.removeMembers(chat.id, ids);
+      this.ui.toast('Miembros eliminados');
+    } catch (err: any) {
+      this.ui.toast(err.message);
+    }
+    await this.openMembers();
+  }
+
+  async setSelectedMembersRole(role: 'subadmin' | 'member') {
+    const chat = this.selected();
+    const ids = [...this.selectedMembers()];
+    if (chat?.kind !== 'group' || !ids.length) return;
+    try {
+      await this.node.node.setRole(chat.id, ids, role);
+      this.ui.toast(role === 'subadmin' ? 'Subadmin asignado' : 'Rol actualizado');
+    } catch (err: any) {
+      this.ui.toast(err.message);
+    }
+    await this.openMembers();
+  }
+
+  async openSafety() {
+    const chat = this.selected();
+    if (chat?.kind !== 'contact') return;
+    this.safety.set(await this.node.node.safetyCode(chat.id));
+    this.sheet.set('safety');
+  }
+
+  // ── Invitaciones ──────────────────────────────────────────────────────────
+
+  async createInvite() {
+    this.sheet.set('contact');
+    this.invite.set(null);
+    await this.refreshInvite('contact');
+  }
+
+  openGroupSheet() {
+    this.invite.set(null);
+    this.sheet.set('group');
+  }
+
+  async groupInvite() {
+    const chat = this.selected();
+    if (chat?.kind !== 'group' || !this.canModerateChat(chat)) return;
+    this.sheet.set('group');
+    this.invite.set(null);
+    await this.refreshInvite('group');
+  }
+
+  async linkDevice() {
+    this.sheet.set('link');
+    this.invite.set(null);
+    await this.refreshInvite('link');
+  }
+
+  // Genera un codigo nuevo y anula el anterior. Lo llama la apertura de la hoja y despues el
+  // timer cada 30s mientras el QR siga a la vista.
+  private async refreshInvite(kind = this.invite()?.kind) {
+    if (!kind) return;
+    try {
+      const created = kind === 'link'
+        ? await this.node.node.createLinkInvite()
+        : await this.node.node.createInvite(kind, kind === 'group' ? this.selectedId() : undefined);
+      const QRCode = (await import('qrcode')) as any;
+      const qr = await (QRCode.toDataURL || QRCode.default?.toDataURL)(created.link, { margin: 1, width: 320, errorCorrectionLevel: 'M' });
+      if (this.inviteToken) this.node.node.cancelInvite(this.inviteToken);
+      this.inviteToken = created.token;
+      this.invite.set({ link: created.link, qr, expiresAt: created.expiresAt, kind });
+    } catch (err: any) {
+      this.ui.toast(err.message || 'No se pudo generar el QR');
+    }
+  }
+
+  private stopInviteRotation() {
+    clearInterval(this.inviteRefreshTimer);
+    this.inviteRefreshTimer = undefined;
+    if (this.inviteToken) this.node.node.cancelInvite(this.inviteToken);
+    this.inviteToken = '';
+    this.invite.set(null);
+  }
+
+  async copyInviteLink(link: string) {
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch {
+      const input = document.createElement('textarea');
+      input.value = link;
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+    }
+    this.ui.toast('Link copiado');
+  }
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
 
   async startRecording() {
     const chat = this.selected();
     if (!chat || this.recording() || this.sendingAudio()) return;
     if (!this.canWriteCurrentChat()) {
-      this.api.toast('Solo administradores pueden enviar mensajes');
-      return;
-    }
-    if (!chat.secret) {
-      this.api.toast('Falta la llave local de este chat. Necesitas una nueva invitacion segura.');
+      this.ui.toast('Solo administradores pueden enviar mensajes');
       return;
     }
     if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      this.api.toast('Grabar audio requiere HTTPS y un navegador compatible.');
+      this.ui.toast('Grabar audio requiere HTTPS y un navegador compatible.');
       return;
     }
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      this.api.toast('Sin permiso para usar el microfono.');
+      this.ui.toast('Sin permiso para usar el micrófono.');
       return;
     }
-    const mimeType = this.recorderMimeType();
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
     this.recorderStream = stream;
     this.recorderChunks = [];
     this.recordingCancelled = false;
-    this.recordingChat = { scope: chat.scope, id: chat.id, secret: chat.secret, keyVersion: chat.keyVersion };
+    this.recordingChat = chat.id;
     this.recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 24000 });
     this.recorder.ondataavailable = (event) => { if (event.data.size) this.recorderChunks.push(event.data); };
     this.recorder.onstop = () => void this.finishRecording();
@@ -360,7 +515,6 @@ export class ShellComponent implements OnInit {
     this.recordedMs = Date.now() - this.recordingStartedAt;
     this.recording.set(false);
     clearInterval(this.recordingTimer);
-    this.recordingTimer = undefined;
     if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
   }
 
@@ -370,22 +524,66 @@ export class ShellComponent implements OnInit {
     this.stopRecording();
   }
 
-  recordingLabel() {
-    return this.clock(this.recordingMs());
-  }
+  recordingLabel() { return this.clock(this.recordingMs()); }
+  recordingProgress() { return Math.min(100, (this.recordingMs() / maxRecordingMs) * 100); }
 
-  recordingProgress() {
-    return Math.min(100, (this.recordingMs() / maxRecordingMs) * 100);
-  }
-
-  async toggleAudio(message: ChatMessage) {
-    const url = this.audioUrls.get(message.id);
-    if (!url) {
-      this.api.toast('Este audio no se puede reproducir en este dispositivo.');
+  private async finishRecording() {
+    const chunks = this.recorderChunks;
+    const durationMs = this.recordedMs;
+    const mimeType = this.recorder?.mimeType || 'audio/webm';
+    const cancelled = this.recordingCancelled;
+    const chatId = this.recordingChat;
+    for (const track of this.recorderStream?.getTracks() || []) track.stop();
+    this.recorderStream = undefined;
+    this.recorder = undefined;
+    this.recorderChunks = [];
+    this.recordingChat = undefined;
+    if (cancelled || !chunks.length || !chatId) return;
+    if (durationMs < minRecordingMs) {
+      this.ui.toast('Grabación demasiado corta.');
       return;
     }
+    this.sendingAudio.set(true);
+    try {
+      const bytes = new Uint8Array(await new Blob(chunks, { type: mimeType }).arrayBuffer());
+      if (bytes.length > 3 * 1024 * 1024) throw new Error('El audio es demasiado largo');
+      await this.node.node.sendAudio(chatId, b64url(bytes), mimeType, durationMs);
+      setTimeout(() => this.scrollBottom(), 40);
+    } catch (err: any) {
+      this.ui.toast(err.message || 'No se pudo enviar el audio');
+    } finally {
+      this.sendingAudio.set(false);
+    }
+  }
+
+  // Los audios se descifran al llegar y solo viven como blob URL mientras estan en pantalla.
+  private syncAudio() {
+    const legacy = this.legacyOpen();
+    const items: any[] = legacy ? legacy.messages : this.messages();
+    const keep = new Set<string>();
+    for (const m of items) {
+      if (m.kind !== 'audio' || !m.audio) continue;
+      keep.add(m.id);
+      if (this.audioUrls.has(m.id)) continue;
+      try {
+        this.audioUrls.set(m.id, URL.createObjectURL(new Blob([fromB64url(m.audio)], { type: m.mime || 'audio/webm' })));
+      } catch {}
+    }
+    for (const [id, url] of [...this.audioUrls]) {
+      if (keep.has(id)) continue;
+      if (this.playingId() === id) this.stopPlayback();
+      URL.revokeObjectURL(url);
+      this.audioUrls.delete(id);
+    }
+  }
+
+  hasAudio(m: { id: string }) { return this.audioUrls.has(m.id); }
+
+  async toggleAudio(m: { id: string }) {
+    const url = this.audioUrls.get(m.id);
+    if (!url) return;
     const player = this.ensurePlayer();
-    if (this.playingId() === message.id) {
+    if (this.playingId() === m.id) {
       player.pause();
       return;
     }
@@ -393,29 +591,23 @@ export class ShellComponent implements OnInit {
       player.src = url;
       player.currentTime = 0;
     }
-    this.playingId.set(message.id);
-    this.playbackPosition.set(player.currentTime * 1000);
+    this.playingId.set(m.id);
     try {
       await player.play();
     } catch {
       this.playingId.set(null);
-      this.api.toast('No se pudo reproducir el audio.');
+      this.ui.toast('No se pudo reproducir el audio.');
     }
   }
 
-  hasAudio(message: ChatMessage) {
-    return this.audioUrls.has(message.id);
+  audioProgress(m: { id: string; durationMs?: number | null }) {
+    if (this.playingId() !== m.id || !m.durationMs) return 0;
+    return Math.min(100, (this.playbackPosition() / m.durationMs) * 100);
   }
 
-  audioProgress(message: ChatMessage) {
-    if (this.playingId() !== message.id || !message.durationMs) return 0;
-    return Math.min(100, (this.playbackPosition() / message.durationMs) * 100);
-  }
-
-  audioTimeLabel(message: ChatMessage) {
-    const total = message.durationMs || 0;
-    if (this.playingId() !== message.id) return this.clock(total);
-    return this.clock(Math.min(this.playbackPosition(), total));
+  audioTimeLabel(m: { id: string; durationMs?: number | null }) {
+    const total = m.durationMs || 0;
+    return this.clock(this.playingId() === m.id ? Math.min(this.playbackPosition(), total) : total);
   }
 
   clock(ms: number) {
@@ -423,89 +615,14 @@ export class ShellComponent implements OnInit {
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   }
 
-  private recorderMimeType() {
-    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
-    return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
-  }
-
-  private async finishRecording() {
-    const chunks = this.recorderChunks;
-    const durationMs = this.recordedMs;
-    const mimeType = this.recorder?.mimeType || 'audio/webm';
-    const cancelled = this.recordingCancelled;
-    const chat = this.recordingChat;
-    this.releaseRecorder();
-    if (cancelled || !chunks.length || !chat) return;
-    if (durationMs < minRecordingMs) {
-      this.api.toast('Grabacion demasiado corta.');
-      return;
-    }
-    await this.sendAudio(chat, new Blob(chunks, { type: mimeType }), durationMs, mimeType);
-  }
-
-  private async sendAudio(chat: { scope: 'contact' | 'group'; id: string; secret: string; keyVersion: number }, blob: Blob, durationMs: number, mimeType: string) {
-    if (!chat.secret) return;
-    this.sendingAudio.set(true);
-    try {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      const encrypted = await this.crypto.encryptBytes(bytes, chat.secret, chat.keyVersion);
-      const { message } = await this.api.sendAudio(chat.scope, chat.id, encrypted, durationMs, mimeType);
-      const optimistic: ChatMessage = { ...message, encrypted, sender: this.auth.user() || undefined, text: '' };
-      this.cacheAudio(optimistic, bytes);
-      // Si mientras tanto se cambio de chat, el audio ya viajo al correcto pero la burbuja
-      // optimista no va en pantalla: la trae loadMessages al volver.
-      if (this.selected()?.id !== chat.id) return;
-      this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
-      setTimeout(() => this.scrollBottom(), 40);
-    } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo enviar el audio');
-    } finally {
-      this.sendingAudio.set(false);
-    }
-  }
-
-  private releaseRecorder() {
-    clearInterval(this.recordingTimer);
-    this.recordingTimer = undefined;
-    for (const track of this.recorderStream?.getTracks() || []) track.stop();
-    this.recorderStream = undefined;
-    this.recorder = undefined;
-    this.recorderChunks = [];
-    this.recordingChat = undefined;
-    this.recording.set(false);
-    this.recordingMs.set(0);
-  }
-
   private ensurePlayer() {
     if (this.player) return this.player;
     const player = new Audio();
     player.addEventListener('timeupdate', () => this.playbackPosition.set(player.currentTime * 1000));
-    player.addEventListener('ended', () => {
-      this.playingId.set(null);
-      this.playbackPosition.set(0);
-      player.currentTime = 0;
-    });
+    player.addEventListener('ended', () => { this.playingId.set(null); this.playbackPosition.set(0); });
     player.addEventListener('pause', () => { if (!player.ended) this.playingId.set(null); });
     this.player = player;
     return player;
-  }
-
-  private cacheAudio(message: ChatMessage, bytes: Uint8Array) {
-    const previous = this.audioUrls.get(message.id);
-    if (previous) URL.revokeObjectURL(previous);
-    const blob = new Blob([bytes], { type: message.mimeType || 'audio/webm' });
-    this.audioUrls.set(message.id, URL.createObjectURL(blob));
-  }
-
-  // El audio descifrado solo vive como blob URL en memoria. Cuando el mensaje se va
-  // (cambio de chat o venció) hay que revocarlo o el blob queda retenido.
-  private releaseAudio(keep?: Set<string>) {
-    for (const [id, url] of [...this.audioUrls]) {
-      if (keep?.has(id)) continue;
-      if (this.playingId() === id) this.stopPlayback();
-      URL.revokeObjectURL(url);
-      this.audioUrls.delete(id);
-    }
   }
 
   private stopPlayback() {
@@ -515,101 +632,13 @@ export class ShellComponent implements OnInit {
     this.playbackPosition.set(0);
   }
 
-  keydown(event: KeyboardEvent) {
-    const mobile = matchMedia('(max-width: 760px)').matches;
-    if (event.key === 'Enter' && !event.shiftKey && !mobile) {
-      event.preventDefault();
-      void this.send();
-    }
-  }
+  // ── Configuracion ─────────────────────────────────────────────────────────
 
-  onMessagesScroll() {
-    const box = this.scrollbox?.nativeElement;
-    if (!box) return;
-    this.showJumpToLatest.set(box.scrollHeight - box.scrollTop - box.clientHeight > 180);
-  }
-
-  async createInvite() {
-    this.inviteContext = { scope: 'contact' };
-    this.inviteSecret = this.secrets.generate();
-    this.sheet.set('contact');
-    await this.refreshInvite();
-  }
-
-  openGroupSheet() {
+  openSettings() {
     this.invite.set(null);
-    this.sheet.set('group');
-  }
-
-  async createGroup() {
-    if (this.groupCreating()) return;
-    this.groupCreating.set(true);
-    const secret = this.secrets.generate();
-    try {
-      const { group } = await this.api.createGroup(this.groupName || 'Grupo OTP');
-      this.secrets.save('group', group.id, secret);
-      this.groupName = '';
-      await this.load();
-      await this.openGroup({ ...group, role: 'admin' });
-      this.sheet.set(null);
-    } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo crear el grupo');
-    } finally {
-      this.groupCreating.set(false);
-    }
-  }
-
-  async groupInvite() {
-    const chat = this.selected();
-    if (chat?.scope !== 'group' || !this.canModerateChat(chat)) return;
-    if (!chat.secret) {
-      this.api.toast('Falta la llave local del grupo en este dispositivo.');
-      return;
-    }
-    this.inviteContext = { scope: 'group', id: chat.id, secret: chat.secret, keyVersion: chat.keyVersion };
-    this.sheet.set('group');
-    await this.refreshInvite();
-  }
-
-  // Genera una invitacion nueva y cancela la anterior. La llama createInvite/groupInvite una
-  // vez, y despues el timer cada 30s mientras la hoja siga mostrando el QR.
-  private async refreshInvite() {
-    const ctx = this.inviteContext;
-    if (!ctx) return;
-    const previa = this.invite();
-    try {
-      let invitation: any;
-      if (ctx.scope === 'contact') {
-        invitation = (await this.api.createContactInvite()).invitation;
-        invitation.link = this.secrets.attachToInviteLink(invitation.link, this.inviteSecret, 1);
-        this.secrets.savePendingInvite(invitation.code, this.inviteSecret);
-      } else {
-        invitation = (await this.api.createGroupInvite(ctx.id)).invitation;
-        invitation.link = this.secrets.attachToInviteLink(invitation.link, ctx.secret, ctx.keyVersion);
-      }
-      invitation.qr = await this.secrets.qrFor(invitation.link);
-      // Recien cuando la nueva esta lista se muestra y se da de baja la vieja: si la creacion
-      // falla, el codigo anterior sigue vigente y visible.
-      this.invite.set(invitation);
-      if (previa?.code && previa.code !== invitation.code) this.invalidatePreviousInvite(previa.code);
-    } catch {
-      // Sin conexion se mantiene el QR actual; el proximo tick reintenta.
-    }
-  }
-
-  private invalidatePreviousInvite(code: string) {
-    this.secrets.consumePendingInvite(code);
-    void this.api.cancelInvite(code).catch(() => {});
-  }
-
-  private stopInviteRotation() {
-    clearInterval(this.inviteRefreshTimer);
-    this.inviteRefreshTimer = undefined;
-    // Al cerrar la hoja, el ultimo codigo mostrado se cancela para que no quede vivo su TTL.
-    const ultima = this.invite();
-    if (ultima?.code) this.invalidatePreviousInvite(ultima.code);
-    this.inviteContext = null;
-    this.inviteSecret = '';
+    this.accountName = this.node.me()?.name || '';
+    this.backupPassphrase = '';
+    this.sheet.set('settings');
   }
 
   openActions() {
@@ -618,145 +647,127 @@ export class ShellComponent implements OnInit {
     this.sheet.set('actions');
   }
 
-  openSettings() {
-    this.invite.set(null);
-    this.accountUsername = this.auth.user()?.username || '';
-    this.accountPassword = '';
-    this.accountCurrentPassword = '';
-    this.sheet.set('settings');
-  }
-
-  async setTimer(seconds: string) {
-    const chat = this.selected();
-    if (!chat) return;
-    const timerSeconds = Number(seconds);
-    chat.timerSeconds = timerSeconds;
-    this.selected.set({ ...chat });
-    chat.scope === 'group' ? await this.api.updateGroupTimer(chat.id, timerSeconds) : await this.api.updateContactTimer(chat.id, timerSeconds);
-  }
-
-  async rotateSecret() {
-    const chat = this.selected();
-    if (!chat?.secret) {
-      this.api.toast('Falta la llave actual para renovar este chat.');
-      return;
-    }
-    if (chat.scope === 'group' && !this.isGroupOwner(chat)) {
-      this.api.toast('Solo el admin principal puede renovar la clave del grupo.');
-      return;
-    }
-    const nextVersion = chat.keyVersion + 1;
-    const nextSecret = this.secrets.generate();
-    const control = JSON.stringify({ otpchatControl: 'key-rotation', version: nextVersion, secret: nextSecret });
-    const encrypted = await this.crypto.encrypt(control, chat.secret, chat.keyVersion);
-    const { message } = await this.api.sendMessage(chat.scope, chat.id, encrypted);
-    if (chat.scope === 'group') await this.api.updateGroupKeyVersion(chat.id, nextVersion);
-    this.secrets.save(chat.scope, chat.id, nextSecret, nextVersion);
-    this.selected.set({ ...chat, secret: nextSecret, keyVersion: nextVersion });
-    const optimistic = { ...message, encrypted, sender: this.auth.user() || undefined, text: 'Clave del chat renovada' };
-    this.messages.update((items) => items.some((item) => item.id === message.id) ? items : [...items, optimistic]);
-    this.api.toast('Clave renovada para futuros mensajes');
-    setTimeout(() => this.scrollBottom(), 40);
-  }
-
-  async deleteCurrentChat() {
-    const chat = this.selected();
-    if (!chat) return;
-    if (chat.scope === 'contact') {
-      await this.api.deleteContact(chat.id);
-      this.api.toast('Chat eliminado');
-    } else if (this.isGroupOwner(chat)) {
-      await this.api.deleteGroup(chat.id);
-      this.api.toast('Grupo eliminado');
-    }
-    this.selected.set(null);
-    this.messages.set([]);
-    this.panel = 'list';
-    await this.load();
-  }
-
-  async leaveCurrentGroup() {
-    const chat = this.selected();
-    if (chat?.scope !== 'group') return;
-    await this.api.leaveGroup(chat.id);
-    this.api.toast('Saliste del grupo');
-    this.selected.set(null);
-    this.messages.set([]);
-    this.panel = 'list';
-    await this.load();
-  }
-
-  async openMembers() {
-    const chat = this.selected();
-    if (chat?.scope !== 'group' || !this.canModerateChat(chat)) return;
-    const res = await this.api.groupMembers(chat.id);
-    this.groupMembers.set(res.members);
-    this.selectedMembers.set(new Set());
-    this.sheet.set('members');
-  }
-
-  toggleMember(id: string) {
-    const next = new Set(this.selectedMembers());
-    next.has(id) ? next.delete(id) : next.add(id);
-    this.selectedMembers.set(next);
-  }
-
-  async removeSelectedMembers() {
-    const chat = this.selected();
-    const ids = [...this.selectedMembers()];
-    if (chat?.scope !== 'group' || !ids.length) return;
-    await this.api.removeGroupMembers(chat.id, ids);
-    this.api.toast('Miembros eliminados');
-    await this.openMembers();
-  }
-
-  async setSelectedMembersRole(role: 'subadmin' | 'member') {
-    const chat = this.selected();
-    const ids = [...this.selectedMembers()];
-    if (chat?.scope !== 'group' || !this.isGroupOwner(chat) || !ids.length) return;
-    await this.api.updateGroupMemberRoles(chat.id, ids, role);
-    this.api.toast(role === 'subadmin' ? 'Subadmin asignado' : 'Rol actualizado');
-    await this.openMembers();
-  }
-
-  async copyInviteLink(link: string) {
+  async saveName() {
     try {
-      await navigator.clipboard.writeText(link);
-      this.api.toast('Link copiado');
-    } catch {
-      const input = document.createElement('textarea');
-      input.value = link;
-      input.style.position = 'fixed';
-      input.style.opacity = '0';
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand('copy');
-      input.remove();
-      this.api.toast('Link copiado');
+      await this.node.node.rename(this.accountName);
+      this.node.refresh();
+      this.ui.toast('Nombre actualizado');
+    } catch (err: any) {
+      this.ui.toast(err.message);
     }
   }
 
-  async openAdmin() {
-    this.sheet.set('admin');
-    this.adminStats.set(await this.api.adminStats());
-    this.adminUsers.set((await this.api.adminUsers()).users);
+  async exportBackup() {
+    try {
+      const file = await this.node.node.exportBackup(this.backupPassphrase);
+      const blob = new Blob([JSON.stringify(file)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `otpchat-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      this.backupPassphrase = '';
+      this.ui.toast('Respaldo descargado. Guardalo junto con la frase.');
+    } catch (err: any) {
+      this.ui.toast(err.message);
+    }
   }
 
-  toggleUser(id: string) {
-    const next = new Set(this.selectedUsers());
-    next.has(id) ? next.delete(id) : next.add(id);
-    this.selectedUsers.set(next);
+  async unlinkDevice(deviceId: string) {
+    try {
+      await this.node.node.unlinkDevice(deviceId);
+      this.node.refresh();
+      this.ui.toast('Dispositivo desvinculado');
+    } catch (err: any) {
+      this.ui.toast(err.message);
+    }
   }
 
-  async resetPassword(id: string) {
-    this.tempPassword.set((await this.api.resetPassword(id)).temporaryPassword);
+  async importLegacy() {
+    this.legacyProgress.set('Conectando con la versión anterior…');
+    try {
+      const chats = await importLegacyChats((text) => this.legacyProgress.set(text));
+      await this.node.saveLegacy(chats);
+      await closeLegacySession();
+      this.legacyAvailable.set(false);
+      this.ui.toast(`Importaste ${chats.length} chats anteriores`);
+    } catch (err: any) {
+      this.ui.toast(err.message || 'No se pudo importar');
+    } finally {
+      this.legacyProgress.set('');
+    }
   }
 
-  async deleteSelected() {
-    await this.api.deleteUsers([...this.selectedUsers()]);
-    this.selectedUsers.set(new Set());
-    await this.openAdmin();
+  async discardLegacy() {
+    await this.node.saveLegacy([]);
+    this.legacyOpen.set(null);
+    this.panel = 'list';
   }
+
+  async logoutDevice() {
+    if (!confirm('Se borran la cuenta y los chats de este dispositivo. Si no tenés un respaldo u otro dispositivo vinculado, no se pueden recuperar. ¿Seguir?')) return;
+    await this.node.wipe();
+  }
+
+  setPrivacy(value: boolean) {
+    this.privacy.setEnabled(value);
+  }
+
+  async toggleNotifications() {
+    if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window) || !window.isSecureContext) {
+      this.ui.toast('Las notificaciones push requieren HTTPS y un navegador compatible.');
+      return;
+    }
+    try {
+      if (this.notificationsEnabled()) {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        await this.node.unregisterPush().catch(() => {});
+        await subscription?.unsubscribe();
+        this.writePref('otpchat_notifications', 'off');
+        this.notificationsEnabled.set(false);
+        this.ui.toast('Notificaciones desactivadas');
+        return;
+      }
+      const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+      if (permission !== 'granted') {
+        this.ui.toast('Permiso de notificaciones denegado');
+        return;
+      }
+      const key = this.node.vapidPublicKey();
+      if (!key) throw new Error('Push no configurado en el servidor');
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = (await registration.pushManager.getSubscription()) || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64url(key) as unknown as BufferSource });
+      await this.node.registerPush(subscription.toJSON());
+      this.writePref('otpchat_notifications', 'on');
+      this.notificationsEnabled.set(true);
+      this.ui.toast('Notificaciones activadas');
+    } catch (err: any) {
+      this.ui.toast(err.message || 'No se pudo cambiar las notificaciones');
+    }
+  }
+
+  private async notifyNewMessage() {
+    if (!this.notificationsEnabled() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+    try {
+      const registration = await navigator.serviceWorker?.ready;
+      await registration?.showNotification('Mensajes nuevos', { tag: 'otpchat-messages', icon: '/icons/icon.svg', badge: '/icons/icon.svg' });
+    } catch {}
+  }
+
+  async installApp() {
+    const prompt = this.deferredInstallPrompt();
+    if (!prompt) {
+      this.ui.toast(this.standaloneMode() ? 'Ya está instalado como app.' : 'Usá el menú del navegador para agregar a la pantalla de inicio.');
+      return;
+    }
+    await prompt.prompt();
+    await prompt.userChoice.catch(() => null);
+    this.deferredInstallPrompt.set(null);
+  }
+
+  // ── Varios ────────────────────────────────────────────────────────────────
 
   timerLabel(seconds: number) {
     if (!seconds) return 'Desactivado';
@@ -766,9 +777,9 @@ export class ShellComponent implements OnInit {
     return seconds === 604800 ? '7 días' : '1 día';
   }
 
-  countdown(to?: string | null) {
+  countdown(to?: number | null) {
     if (!to) return '';
-    const ms = new Date(to).getTime() - Date.now();
+    const ms = to - Date.now();
     if (ms <= 0) return '0s';
     const s = Math.floor(ms / 1000);
     const d = Math.floor(s / 86400);
@@ -778,178 +789,38 @@ export class ShellComponent implements OnInit {
     return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
   }
 
-  isMine(message: ChatMessage) {
-    return message.senderId === this.auth.user()?.id;
+  canModerate(role?: string | null) {
+    return role === 'admin' || role === 'subadmin';
   }
 
-  back() { this.panel = 'list'; }
-
-  switchAuthMode(mode: 'login' | 'register') {
-    this.authMode = mode;
-    this.authError.set('');
-    this.password = '';
-    this.repeatPassword = '';
+  isGroupOwner(chat?: { kind: string | null; founderId?: string | null } | null) {
+    return chat?.kind === 'group' && chat.founderId === this.node.me()?.userId;
   }
 
-  acceptDisclaimer() {
-    localStorage.setItem('otpchat_disclaimer_accepted', '1');
-    this.disclaimerAccepted.set(true);
+  canModerateChat(chat?: { kind: string | null; role?: string | null; founderId?: string | null } | null) {
+    return !!chat && chat.kind === 'group' && (this.isGroupOwner(chat) || this.canModerate(chat.role));
   }
 
-  toggleTheme() {
-    this.darkMode.update((enabled) => !enabled);
-    localStorage.setItem('otpchat_theme', this.darkMode() ? 'dark' : 'light');
-    this.applyTheme();
+  roleLabel(role?: string) {
+    return role === 'admin' ? 'Admin principal' : role === 'subadmin' ? 'Subadmin' : 'Miembro';
   }
 
-  async saveUsername() {
-    try {
-      await this.auth.changeUsername(this.accountUsername);
-      this.api.toast('Nombre de usuario actualizado');
-    } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo cambiar el usuario');
+  memberSelectable(member: { userId: string; role: string }) {
+    const chat = this.selected();
+    if (!chat || member.userId === this.node.me()?.userId || member.userId === chat.founderId) return false;
+    return !(chat.role === 'subadmin' && member.role !== 'member');
+  }
+
+  keydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && !event.shiftKey && !matchMedia('(max-width: 760px)').matches) {
+      event.preventDefault();
+      void this.send();
     }
   }
 
-  async saveAccountPassword() {
-    const errors = this.passwordErrors(this.accountPassword);
-    if (errors.length) {
-      this.api.toast(`La contraseña debe tener ${errors.join(', ')}.`);
-      return;
-    }
-    if (!this.accountCurrentPassword) {
-      this.api.toast('Ingresá tu contraseña actual.');
-      return;
-    }
-    try {
-      await this.auth.changePassword(this.accountPassword, this.accountCurrentPassword);
-      this.accountPassword = '';
-      this.accountCurrentPassword = '';
-      this.api.toast('Contraseña actualizada');
-    } catch (err: any) {
-      this.api.toast(err.error?.error || 'No se pudo cambiar la contraseña');
-    }
-  }
-
-  async toggleNotifications() {
-    if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window) || !window.isSecureContext) {
-      this.api.toast('Las notificaciones push requieren HTTPS y un navegador compatible.');
-      return;
-    }
-    if (this.notificationsEnabled()) {
-      await this.disablePushNotifications();
-      localStorage.setItem('otpchat_notifications', 'off');
-      this.notificationsEnabled.set(false);
-      this.pushSubscribed.set(false);
-      this.api.toast('Notificaciones desactivadas');
-      return;
-    }
-    const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
-    this.notificationPermission.set(permission);
-    if (permission !== 'granted') {
-      this.api.toast('Permiso de notificaciones denegado');
-      return;
-    }
-    try {
-      await this.enablePushNotifications();
-      localStorage.setItem('otpchat_notifications', 'on');
-      localStorage.setItem('otpchat_push_subscribed', 'on');
-      this.notificationsEnabled.set(true);
-      this.pushSubscribed.set(true);
-      this.api.toast('Notificaciones activadas');
-    } catch (err: any) {
-      this.api.toast(err.error?.error || err.message || 'No se pudo activar push');
-    }
-  }
-
-  async installApp() {
-    const prompt = this.deferredInstallPrompt();
-    if (!prompt) {
-      this.api.toast(this.standaloneMode() ? 'Ya esta instalado como app.' : 'Usa el menu del navegador para agregar a pantalla de inicio.');
-      return;
-    }
-    await prompt.prompt();
-    await prompt.userChoice.catch(() => null);
-    this.deferredInstallPrompt.set(null);
-  }
-
-  passwordErrors(password: string) {
-    const errors: string[] = [];
-    if (password.length <= 6) errors.push('mas de 6 caracteres');
-    if (!/[A-Z]/.test(password)) errors.push('1 mayuscula');
-    if (!/[a-z]/.test(password)) errors.push('1 minuscula');
-    if (!/[0-9]/.test(password)) errors.push('1 numero');
-    if (!/[^A-Za-z0-9]/.test(password)) errors.push('1 simbolo');
-    return errors;
-  }
-
-  private applyTheme() {
-    document.documentElement.dataset['theme'] = this.darkMode() ? 'dark' : 'light';
-  }
-
-  private async onSocket(event: any) {
-    if (event.type === 'session:invalidated') {
-      this.api.toast('Tu sesión fue invalidada por reset de contraseña');
-      this.auth.clear();
-    }
-    if (event.type === 'contact:accepted') {
-      await this.load();
-      const contact = this.contacts().find((item) => item.conversationId === event.conversationId);
-      if (contact) {
-        // Fallback a inviteSecret por si una rotacion simultanea ya consumio el secreto de
-        // este codigo: todos los codigos rotados comparten el mismo secreto de contacto.
-        const secret = this.secrets.consumePendingInvite(event.code) || this.inviteSecret;
-        if (secret) this.secrets.save('contact', event.conversationId, secret);
-        this.sheet.set(null);
-        this.invite.set(null);
-        await this.openContact(contact);
-        this.api.toast('Invitación aceptada');
-      }
-    }
-    if (['group:removed', 'group:left', 'group:deleted'].includes(event.type)) {
-      if (this.selected()?.id === event.groupId) {
-        this.selected.set(null);
-        this.messages.set([]);
-        this.panel = 'list';
-        this.sheet.set(null);
-      }
-      await this.load();
-    }
-    if (event.type === 'contact:deleted') {
-      if (this.selected()?.id === event.conversationId) {
-        this.selected.set(null);
-        this.messages.set([]);
-        this.panel = 'list';
-      }
-      await this.load();
-    }
-    if (event.type?.startsWith('group:')) await this.load();
-    if (event.type === 'timer:changed') this.api.toast(`${event.by} cambió los mensajes temporales`);
-    if (event.type === 'message:new') {
-      const mine = event.message.senderId === this.auth.user()?.id;
-      if (!mine && !('PushManager' in window)) void this.notifyNewMessage();
-      const chat = this.selected();
-      if (chat && chat.id === event.message.targetId) {
-        const decrypted = await this.decryptMessage(chat, event.message);
-        this.messages.update((items) => items.some((item) => item.id === decrypted.id) ? items : [...items, decrypted]);
-        setTimeout(() => this.scrollBottom(), 40);
-      }
-      if (!mine && this.chatVisible(event.message.targetId)) {
-        void this.markRead(event.message.scope, event.message.targetId);
-      } else if (!mine) {
-        this.badge.update((b) => ({ ...b, [event.message.targetId]: (b[event.message.targetId] || 0) + 1 }));
-        this.api.toast('Mensaje nuevo');
-      }
-    }
-    if (event.type === 'messages:expired') this.pruneExpired();
-  }
-
-  private pruneExpired() {
-    const before = this.messages().length;
-    this.messages.update((items) => items.filter((m) => !m.expiresAt || new Date(m.expiresAt).getTime() > Date.now()));
-    if (before === this.messages().length) return;
-    this.releaseAudio(new Set(this.messages().map((m) => m.id)));
-    this.api.toast('Un mensaje temporal expiró');
+  onMessagesScroll() {
+    const box = this.scrollbox?.nativeElement;
+    if (box) this.showJumpToLatest.set(box.scrollHeight - box.scrollTop - box.clientHeight > 180);
   }
 
   scrollBottom() {
@@ -960,175 +831,30 @@ export class ShellComponent implements OnInit {
     }
   }
 
-  private async notifyNewMessage() {
-    if (!this.notificationsEnabled() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    if (document.visibilityState === 'visible' && document.hasFocus()) return;
-    const options = { tag: 'otpchat-messages', renotify: false, icon: '/icons/icon.svg', badge: '/icons/icon.svg' };
-    try {
-      const registration = await navigator.serviceWorker?.ready;
-      if (registration) {
-        await registration.showNotification('Mensajes nuevos', options);
-        return;
-      }
-    } catch {}
-    new Notification('Mensajes nuevos', options);
+  back() {
+    this.panel = 'list';
   }
 
-  private async enablePushNotifications() {
-    const { publicKey } = await this.api.pushPublicKey();
-    if (!publicKey) throw new Error('Push no configurado en el servidor');
-    const registration = await navigator.serviceWorker.ready;
-    const existing = await registration.pushManager.getSubscription();
-    const subscription = existing || await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: this.urlBase64ToUint8Array(publicKey)
-    });
-    await this.api.subscribePush(subscription.toJSON());
+  acceptDisclaimer() {
+    this.writePref('otpchat_disclaimer_accepted', '1');
+    this.disclaimerAccepted.set(true);
   }
 
-  private async disablePushNotifications() {
-    const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
-    await this.api.unsubscribePush(subscription?.endpoint);
-    if (subscription) await subscription.unsubscribe();
-    localStorage.setItem('otpchat_push_subscribed', 'off');
+  toggleTheme() {
+    this.darkMode.update((enabled) => !enabled);
+    this.writePref('otpchat_theme', this.darkMode() ? 'dark' : 'light');
+    this.applyTheme();
   }
 
-  private urlBase64ToUint8Array(value: string) {
-    const padding = '='.repeat((4 - value.length % 4) % 4);
-    const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
-    const raw = atob(base64);
-    return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+  private applyTheme() {
+    document.documentElement.dataset['theme'] = this.darkMode() ? 'dark' : 'light';
   }
 
-  // El payload de este control lleva el secreto nuevo en claro, asi que en cuanto se
-  // reconoce como tal NUNCA se devuelve el texto crudo: todos los caminos salen por una
-  // etiqueta. Antes el guard de downgrade caia al return del texto y al recargar el
-  // historial (secreto ya guardado en esa version) la burbuja mostraba el JSON.
-  private applyKeyRotation(scope: 'contact' | 'group', id: string, text: string, senderId?: string): string {
-    let control: any;
-    try {
-      control = JSON.parse(text);
-    } catch {
-      return text;
-    }
-    if (control?.otpchatControl !== 'key-rotation' || !control.secret || !control.version) return text;
-    // El emisor tiene que estar autorizado a rotar. En un grupo, solo el fundador: sin
-    // esto cualquier miembro cifraba este control con la clave actual y le imponia a todos
-    // un secreto elegido por el — que seguia conociendo aunque despues lo expulsaran.
-    if (!this.canRotateKey(scope, id, senderId)) return '[Mensaje de control ignorado]';
-    const version = Number(control.version);
-    const known = this.secrets.get(scope, id)?.version || 0;
-    // Nunca aceptar un downgrade: solo se guarda una version mas nueva que la que ya
-    // tenemos. Volver a ver una version conocida es lo normal al recargar el historial,
-    // y ahi lo unico que se saltea es el guardado: el aviso se muestra igual.
-    if (version > known) {
-      this.secrets.save(scope, id, control.secret, version);
-      const chat = this.selected();
-      if (chat?.scope === scope && chat.id === id && version > chat.keyVersion) {
-        this.selected.set({ ...chat, secret: control.secret, keyVersion: version });
-      }
-    }
-    return 'Clave del chat renovada';
+  reload() {
+    location.reload();
   }
 
-  // Contacto: cualquiera de los dos participantes. Grupo: unicamente el fundador, el mismo
-  // que del lado del servidor es el unico que puede subir keyVersion.
-  private canRotateKey(scope: 'contact' | 'group', id: string, senderId?: string): boolean {
-    if (!senderId) return false;
-    if (scope === 'contact') return id.split(':').includes(senderId);
-    return this.groups().find((g) => g.id === id)?.founderId === senderId;
-  }
-
-  private pendingInvite(): { code: string; key?: string; keyVersion?: number } | null {
-    const raw = localStorage.getItem('otpchat_pending_invite');
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed?.code ? parsed : { code: raw };
-    } catch {
-      return { code: raw };
-    }
-  }
-
-  canModerate(role?: string) {
-    return role === 'admin' || role === 'subadmin';
-  }
-
-  private consumePushOpen(): { scope: 'contact' | 'group'; id: string } | null {
-    const params = new URLSearchParams(location.hash.split('?')[1] || '');
-    const raw = params.get('pushOpen') || '';
-    const separator = raw.indexOf(':');
-    if (separator <= 0) return null;
-    const scope = raw.slice(0, separator);
-    const id = raw.slice(separator + 1);
-    return (scope === 'contact' || scope === 'group') && id ? { scope, id } : null;
-  }
-
-  private consumePushList() {
-    const params = new URLSearchParams(location.hash.split('?')[1] || '');
-    return params.get('pushList') === '1';
-  }
-
-  private async handlePushNavigationFromUrl() {
-    const pushOpen = this.consumePushOpen();
-    const pushList = this.consumePushList();
-    if (!pushOpen && !pushList) return;
-    if (!this.auth.ready() || !this.auth.user() || (!this.contacts().length && !this.groups().length)) return;
-    history.replaceState({ ...history.state, open: null }, '', '/#/');
-    if (pushList && !pushOpen) {
-      this.panel = 'list';
-      return;
-    }
-    if (pushOpen?.scope === 'contact') {
-      const contact = this.contacts().find((c) => c.conversationId === pushOpen.id);
-      if (contact) await this.openContact(contact);
-    }
-    if (pushOpen?.scope === 'group') {
-      const group = this.groups().find((g) => g.id === pushOpen.id);
-      if (group) await this.openGroup(group);
-    }
-  }
-
-  isGroupOwner(chat?: { scope: 'contact' | 'group'; founderId?: string } | null) {
-    return chat?.scope === 'group' && chat.founderId === this.auth.user()?.id;
-  }
-
-  canModerateChat(chat?: { scope: 'contact' | 'group'; role?: string; founderId?: string } | null) {
-    return !!chat && chat.scope === 'group' && (this.isGroupOwner(chat) || this.canModerate(chat.role));
-  }
-
-  roleLabel(role?: string) {
-    return role === 'admin' ? 'Admin principal' : role === 'subadmin' ? 'Subadmin' : 'Miembro';
-  }
-
-  private syncSelectedFromBootstrap(contacts: Contact[], groups: Group[]) {
-    const chat = this.selected();
-    if (!chat) return;
-    if (chat.scope === 'contact') {
-      if (!contacts.some((contact) => contact.conversationId === chat.id)) {
-        this.selected.set(null);
-        this.messages.set([]);
-        this.panel = 'list';
-      }
-      return;
-    }
-    const group = groups.find((item) => item.id === chat.id);
-    if (!group) {
-      this.selected.set(null);
-      this.messages.set([]);
-      this.panel = 'list';
-      return;
-    }
-    this.selected.set({
-      ...chat,
-      title: group.name,
-      role: group.role,
-      founderId: group.founderId,
-      joinedAt: group.joinedAt,
-      keyVersion: Math.max(chat.keyVersion, group.keyVersion || 1),
-      timerSeconds: group.timerSeconds,
-      membersCanWrite: group.membersCanWrite !== false
-    });
+  shortId(id?: string | null) {
+    return id ? id.slice(2, 10) : '';
   }
 }
