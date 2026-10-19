@@ -16,6 +16,17 @@ export function browserLegacySession(): { refreshToken: string; fingerprint: str
   return refreshToken && fingerprint ? { refreshToken, fingerprint } : null;
 }
 
+// Nombre de usuario v1, leido del JWT viejo que quedo en el navegador (solo para mostrarlo).
+export function legacyUsernameFromSession(): string {
+  try {
+    const token = read('otpchat_token') || '';
+    const payload = JSON.parse(atob(token.split('.')[1].replaceAll('-', '+').replaceAll('_', '/')));
+    return typeof payload?.username === 'string' ? payload.username.slice(0, 32) : '';
+  } catch {
+    return '';
+  }
+}
+
 export function legacyFingerprint(): string {
   return read('otpchat_fingerprint') || `v2-${Math.random().toString(36).slice(2, 12)}`;
 }

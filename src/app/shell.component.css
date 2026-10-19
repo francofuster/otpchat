@@ -295,3 +295,7 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
   .safety-code { grid-template-columns: repeat(3, 1fr); font-size: 16px; }
 }
 .legacy-link { display: inline-block; margin-top: 4px; padding: 3px 9px; min-height: 0; border-radius: 999px; font-size: 12px; background: color-mix(in srgb, var(--warning) 22%, var(--panel)); color: var(--ink); }
+.v2-notice .eyebrow { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--blue); }
+.notice-list { margin: 0; padding-left: 20px; display: grid; gap: 10px; color: var(--muted); line-height: 1.45; }
+.notice-list b { color: var(--ink); }
+.v2-notice .button-pair button { min-height: 46px; }

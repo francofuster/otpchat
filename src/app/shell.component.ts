@@ -6,7 +6,7 @@ import { NodeService } from './node.service';
 import { UiService } from './ui.service';
 import { PrivacyService } from './privacy.service';
 import { androidDownloadUrl } from './runtime-config';
-import { browserLegacySession, legacyFingerprint, LegacyChat } from './legacy-import';
+import { browserLegacySession, legacyFingerprint, legacyUsernameFromSession, LegacyChat } from './legacy-import';
 import { TIMER_OPTIONS } from '../core/node.js';
 import { b64url, fromB64url } from '../core/encoding.js';
 
@@ -138,6 +138,11 @@ export class ShellComponent implements OnInit {
       this.ui.toast('Invitación aceptada');
     });
     this.node.on('group:joined', ({ name }) => this.ui.toast(`${name} se unió al grupo`));
+    // Quien todavia tiene la cuenta vieja en este navegador ve el aviso hasta que migra.
+    effect(() => {
+      const pendiente = !!this.browserSession && this.node.legacyOnline() && !this.node.legacySession() && !this.node.migrating();
+      if (pendiente && this.disclaimerAccepted() && !this.v2NoticeDismissed && !this.v2Notice()) this.v2Notice.set('before');
+    });
     this.privacy.onScreenshotDetected(() => {
       const id = this.selectedId();
       if (id) void this.node.node.reportScreenshot(id).catch(() => {});
@@ -193,6 +198,8 @@ export class ShellComponent implements OnInit {
     this.busy.set(true);
     try {
       await this.node.createIdentity(this.nameInput);
+      // Si este navegador tenia la cuenta vieja, se migra en el acto: no hace falta otro paso.
+      if (this.browserSession && this.node.legacyOnline() && !this.node.legacySession()) await this.migrate(true);
       this.resumePendingInvite();
     } catch (err: any) {
       this.onboardingError.set(err.message || 'No se pudo crear la cuenta');
@@ -686,6 +693,32 @@ export class ShellComponent implements OnInit {
     }
   }
 
+  // Aviso "OTPChat 2.0": antes de migrar (este navegador tiene la cuenta vieja y todavia no
+  // migro) y justo despues de entrar con la cuenta vieja.
+  v2Notice = signal<'before' | 'after' | null>(null);
+  private v2NoticeDismissed = false;
+  legacyUsername = legacyUsernameFromSession();
+
+  async noticeMigrateNow() {
+    this.v2NoticeDismissed = true;
+    this.v2Notice.set(null);
+    // Sin cuenta nueva todavia: se crea primero y la migracion arranca sola despues.
+    if (this.node.status() === 'onboarding') return;
+    if (this.browserSession) await this.migrate(true);
+    else this.openMigrate();
+  }
+
+  dismissNotice() {
+    if (this.v2Notice() === 'after') this.writePref('otpchat_v2_notice_after', '1');
+    this.v2NoticeDismissed = true;
+    this.v2Notice.set(null);
+  }
+
+  noticeBackup() {
+    this.dismissNotice();
+    this.openSettings();
+  }
+
   openMigrate() {
     this.migError.set('');
     this.migPass = '';
@@ -705,6 +738,8 @@ export class ShellComponent implements OnInit {
       await this.node.migrate(credentials);
       this.migPass = '';
       this.sheet.set(null);
+      // Recien entro con la cuenta vieja: se le resume que cambia (una sola vez).
+      if (this.readPref('otpchat_v2_notice_after') !== '1') this.v2Notice.set('after');
     } catch (err: any) {
       this.migError.set(err.status === 401 ? 'Usuario o contraseña incorrectos' : err.message || 'No se pudo migrar');
     }

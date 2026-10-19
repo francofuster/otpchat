@@ -287,6 +287,43 @@
   </section>
 }
 
+@if (disclaimerAccepted() && v2Notice(); as notice) {
+  <div class="disclaimer-shade"></div>
+  <section class="disclaimer-modal v2-notice" role="dialog" aria-modal="true" aria-labelledby="v2-notice-title">
+    <div class="disclaimer-scroll">
+      <p class="eyebrow">OTPChat 2.0</p>
+      @if (notice === 'before') {
+        <h2 id="v2-notice-title">{{ legacyUsername ? 'Hola ' + legacyUsername + ', ' : '' }}OTPChat cambió: migrá tu cuenta</h2>
+        <p>Encontramos tu cuenta de la versión anterior en este navegador. Esa versión se va a retirar, así que conviene migrar ahora: tus contactos, grupos e historial pasan a la versión nueva.</p>
+      } @else {
+        <h2 id="v2-notice-title">Listo, tu cuenta está migrada</h2>
+        <p>Esto es lo que cambia a partir de ahora:</p>
+      }
+      <ul class="notice-list">
+        <li><b>Sin usuario ni contraseña.</b> Tu cuenta es una clave guardada en este dispositivo.</li>
+        <li><b>Tus chats viven en tus dispositivos.</b> El servidor ya no guarda mensajes: solo los hace llegar, cifrados.</li>
+        <li><b>Hacé un respaldo o vinculá otro dispositivo.</b> Si perdés este sin respaldo, la cuenta no se puede recuperar.</li>
+        <li><b>Tus contactos y grupos aparecen a medida que ellos también migran.</b> Avisales para que lo hagan.</li>
+        <li><b>Los mensajes anteriores</b> quedan como historial de solo lectura dentro de cada chat.</li>
+      </ul>
+      @if (notice === 'before') {
+        @if (node.status() === 'onboarding') {
+          <p class="hint">Primero elegí un nombre para tu cuenta nueva; la migración arranca sola apenas la creás.</p>
+        }
+        <div class="button-pair">
+          <button class="primary" [disabled]="!!node.migrating()" (click)="noticeMigrateNow()">{{ node.migrating() || (node.status() === 'onboarding' ? 'Crear mi cuenta nueva' : 'Migrar ahora') }}</button>
+          <button (click)="dismissNotice()">Más tarde</button>
+        </div>
+      } @else {
+        <div class="button-pair">
+          <button class="primary" (click)="noticeBackup()">Hacer un respaldo</button>
+          <button (click)="dismissNotice()">Entendido</button>
+        </div>
+      }
+    </div>
+  </section>
+}
+
 @if (sheet(); as openSheet) {
   <div class="shade" (click)="sheet.set(null)"></div>
   <section class="sheet" [class.qr-sheet]="invite()">
