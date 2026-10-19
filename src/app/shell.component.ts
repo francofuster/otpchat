@@ -6,7 +6,7 @@ import { NodeService } from './node.service';
 import { UiService } from './ui.service';
 import { PrivacyService } from './privacy.service';
 import { androidDownloadUrl } from './runtime-config';
-import { closeLegacySession, hasLegacySession, importLegacyChats, LegacyChat } from './legacy-import';
+import { browserLegacySession, legacyFingerprint, LegacyChat } from './legacy-import';
 import { TIMER_OPTIONS } from '../core/node.js';
 import { b64url, fromB64url } from '../core/encoding.js';
 
@@ -17,7 +17,7 @@ const minRecordingMs = 700;
 const inviteRefreshMs = 30_000;
 export const pendingInviteKey = 'otpchat_pending_invite_v2';
 
-type Sheet = 'contact' | 'group' | 'actions' | 'members' | 'settings' | 'link' | 'safety' | 'paste' | null;
+type Sheet = 'contact' | 'group' | 'actions' | 'members' | 'settings' | 'link' | 'safety' | 'paste' | 'migrate' | null;
 
 interface ViewMessage {
   id: string; mine: boolean; senderName: string; ts: number; kind: string; text: string;
@@ -59,8 +59,11 @@ export class ShellComponent implements OnInit {
   sendingAudio = signal(false);
   playingId = signal<string | null>(null);
   playbackPosition = signal(0);
-  legacyAvailable = signal(hasLegacySession());
-  legacyProgress = signal('');
+  // Migracion desde v1: con la sesion de este navegador o con usuario y contrasenia.
+  browserSession = browserLegacySession();
+  migUser = '';
+  migPass = '';
+  migError = signal('');
   notificationsEnabled = signal(this.readPref('otpchat_notifications') === 'on');
   deferredInstallPrompt = signal<any>(null);
   standaloneMode = signal(matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
@@ -683,19 +686,34 @@ export class ShellComponent implements OnInit {
     }
   }
 
-  async importLegacy() {
-    this.legacyProgress.set('Conectando con la versión anterior…');
-    try {
-      const chats = await importLegacyChats((text) => this.legacyProgress.set(text));
-      await this.node.saveLegacy(chats);
-      await closeLegacySession();
-      this.legacyAvailable.set(false);
-      this.ui.toast(`Importaste ${chats.length} chats anteriores`);
-    } catch (err: any) {
-      this.ui.toast(err.message || 'No se pudo importar');
-    } finally {
-      this.legacyProgress.set('');
+  openMigrate() {
+    this.migError.set('');
+    this.migPass = '';
+    this.sheet.set('migrate');
+  }
+
+  async migrate(useBrowser = false) {
+    this.migError.set('');
+    const credentials = useBrowser && this.browserSession
+      ? this.browserSession
+      : { username: this.migUser.trim(), password: this.migPass, fingerprint: legacyFingerprint() };
+    if (!useBrowser && (!this.migUser.trim() || !this.migPass)) {
+      this.migError.set('Ingresá tu usuario y contraseña de la versión anterior');
+      return;
     }
+    try {
+      await this.node.migrate(credentials);
+      this.migPass = '';
+      this.sheet.set(null);
+    } catch (err: any) {
+      this.migError.set(err.status === 401 ? 'Usuario o contraseña incorrectos' : err.message || 'No se pudo migrar');
+    }
+  }
+
+  // Historial v1 asociado al chat nuevo que esta abierto.
+  legacyForSelected() {
+    const id = this.selectedId();
+    return id ? this.node.legacy().find((l) => l.v2ChatId === id) || null : null;
   }
 
   async discardLegacy() {

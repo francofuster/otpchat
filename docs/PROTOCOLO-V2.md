@@ -92,10 +92,30 @@ con la sincronización.
 
 ## Migración desde v1
 
-Si el navegador todavía tiene la sesión de v1, la app ofrece **importar los chats
-anteriores**: los baja de la API vieja, los descifra con las llaves locales y los guarda como
-historial de solo lectura en el dispositivo. La API vieja (y la base) siguen activas mientras
-`DATABASE_URL` esté configurada; al quitarla, el servidor queda solo como relay.
+Las cuentas de la base anterior (Neon) se migran desde la app, en cualquier dispositivo, con
+el usuario y la contraseña de v1 (o la sesión v1 que ya tenga el navegador). Código:
+`src/core/migration.js`; endpoints: `/api/migration/*` en `server/index.js`.
+
+1. **Vínculo.** La cuenta v1 queda asociada a la tarjeta firmada de la identidad v2
+   (tabla `v2_links`). El servidor verifica la firma de la tarjeta.
+2. **Contactos.** Cuando las dos personas de un contacto v1 ya migraron, la que llega segunda
+   crea el chat v2 (su id es determinístico, así que nunca se duplica).
+3. **Grupos.** Los recrea un solo **anfitrión** elegido por el servidor: el fundador si migró;
+   si no, el moderador migrado más antiguo; si no, el miembro migrado más antiguo. El
+   anfitrión registra el grupo v2 (tabla `v2_group_links`, el primero gana), copia nombre y
+   candado, y suma a los demás con su rol a medida que migran (el fundador v1 que no es el
+   anfitrión queda como subadmin: en v2 hay un solo admin principal).
+4. **Historial.** Cada uno baja los mensajes y descifra lo que puede con las llaves v1 de su
+   navegador. Quien los tiene descifrados los **comparte por la red nueva** (sellados) con los
+   participantes del chat v2. En los grupos, cada persona recibe solo lo que ya veía en v1
+   (desde su ingreso). Lo compartido por otro se marca "compartido por X · no se puede
+   verificar".
+5. **Resincronización.** Mientras la API v1 siga activa, la app repite la migración al
+   arrancar y cada 10 minutos, así se suman quienes migran después. Todo es idempotente.
+
+El servidor nunca ve los mensajes en claro: siguen cifrados con las llaves de sala de v1.
+La API vieja (y la base) siguen activas mientras `DATABASE_URL` esté configurada; al quitarla,
+el servidor queda solo como relay.
 
 ## Desvíos respecto del plan
 

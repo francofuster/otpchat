@@ -14,7 +14,9 @@ const collections = {
   messageTimerPreferences: 'MessageTimerPreference',
   messageReadStates: 'MessageReadState',
   securityEvents: 'SecurityEvent',
-  pushSubscriptions: 'PushSubscription'
+  pushSubscriptions: 'PushSubscription',
+  v2Links: 'V2Link',
+  v2GroupLinks: 'V2GroupLink'
 };
 
 const db = Object.fromEntries(Object.keys(collections).map((key) => [key, []]));
@@ -131,7 +133,9 @@ function chunk(items, size) {
 // crea, asi que se agregan aca de forma idempotente. Solo si la tabla ya existe: una base
 // vacia necesita un primer arranque con synchronize para crear el esquema.
 const columnMigrations = [
-  `alter table "users" add column if not exists "tokenVersion" integer not null default 0`
+  `alter table "users" add column if not exists "tokenVersion" integer not null default 0`,
+  `create table if not exists "v2_links" ("id" varchar primary key, "card" jsonb not null, "linkedAt" text not null)`,
+  `create table if not exists "v2_group_links" ("id" varchar primary key, "chatId" varchar not null, "hostUserId" varchar not null, "createdAt" text not null)`
 ];
 
 async function runColumnMigrations() {

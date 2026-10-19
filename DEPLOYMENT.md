@@ -17,7 +17,7 @@ VAPID_PRIVATE_KEY=<opcional>
 
 ### Migración y retiro de la base
 
-Mientras `DATABASE_URL` esté configurada, el mismo proceso sirve también la **API v1** para que cada persona importe sus chats anteriores desde la app (banner "Tenés chats de la versión anterior"). Cuando termine el período de migración:
+Mientras `DATABASE_URL` esté configurada, el mismo proceso sirve también la **API v1** para que cada persona migre su cuenta desde la app (aviso "¿Usabas OTPChat antes?", con usuario y contraseña de v1): se recrean sus contactos y grupos en la red nueva y se recupera el historial. El arranque crea solo las tablas `v2_links` y `v2_group_links`. Conviene dejar la API v1 activa hasta que hayan migrado todos los que comparten grupos, porque los que migran tarde se suman cuando el anfitrión del grupo vuelve a sincronizar. Cuando termine el período de migración:
 
 1. Quitá `DATABASE_URL` (y `PGSSL`, `SUPERADMIN_*`) de Render y redeployá. El log tiene que decir `relay v2, sin base de datos` y `/api/*` responde `410` salvo `/api/health`.
 2. Borrá el proyecto de Neon.

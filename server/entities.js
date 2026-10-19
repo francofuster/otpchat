@@ -168,7 +168,34 @@ export const PushSubscriptionEntity = new EntitySchema({
   indices: [{ name: 'idx_push_subscriptions_user', columns: ['userId'] }]
 });
 
+// Migracion a v2: que identidad nueva (tarjeta firmada) eligio cada cuenta v1. Con esto los
+// clientes recrean solos los contactos y grupos a medida que cada persona migra. id = userId v1.
+export const V2LinkEntity = new EntitySchema({
+  name: 'V2Link',
+  tableName: 'v2_links',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    card: { type: 'jsonb' },
+    linkedAt: { type: 'text' }
+  }
+});
+
+// Que grupo v2 reemplaza a cada grupo v1, y que cuenta lo recreo. id = groupId v1. El primero
+// que lo reclama gana, para que dos clientes no creen dos grupos distintos.
+export const V2GroupLinkEntity = new EntitySchema({
+  name: 'V2GroupLink',
+  tableName: 'v2_group_links',
+  columns: {
+    id: { type: 'varchar', primary: true },
+    chatId: { type: 'varchar' },
+    hostUserId: { type: 'varchar' },
+    createdAt: { type: 'text' }
+  }
+});
+
 export const entities = [
+  V2LinkEntity,
+  V2GroupLinkEntity,
   UserEntity,
   SessionEntity,
   ContactEntity,

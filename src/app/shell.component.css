@@ -294,3 +294,4 @@ button:disabled, input:disabled { opacity: .72; cursor: wait; }
 @media (max-width: 760px) {
   .safety-code { grid-template-columns: repeat(3, 1fr); font-size: 16px; }
 }
+.legacy-link { display: inline-block; margin-top: 4px; padding: 3px 9px; min-height: 0; border-radius: 999px; font-size: 12px; background: color-mix(in srgb, var(--warning) 22%, var(--panel)); color: var(--ink); }

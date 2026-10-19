@@ -11,6 +11,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { nanoid } from 'nanoid';
 import { createRelay } from './relay.js';
+import { verifyCard } from '../src/core/protocol.js';
 import {
   conversationIdForUsers,
   loadStore,
@@ -242,7 +243,8 @@ function auth(req, res, next) {
     user = null;
   }
   if (!user) return res.status(401).json({ error: 'Sesión inválida' });
-  if (user.mustChangePassword && !allowedWhileMustChange.has(req.path)) {
+  // Migrar a v2 tambien se permite: solo lee lo propio y es la salida de la version vieja.
+  if (user.mustChangePassword && !allowedWhileMustChange.has(req.path) && !req.path.startsWith('/api/migration/')) {
     return res.status(403).json({ error: 'Tenés que cambiar la contraseña', mustChangePassword: true });
   }
   req.user = user;
@@ -937,6 +939,107 @@ function canWriteChat(userId, scope, targetId) {
   if (membersCanWrite(group)) return true;
   return canModerate(groupRole(group, userId));
 }
+
+// ── Migracion a v2 ──────────────────────────────────────────────────────────
+// Cada persona que migra vincula su cuenta v1 con su identidad v2 (una tarjeta firmada). Con
+// esos vinculos los clientes recrean en la red nueva los contactos y grupos que ya tenian.
+// El contenido de los mensajes nunca pasa por aca en claro: sigue cifrado con las llaves de
+// sala, y el historial se comparte entre los propios participantes por la red nueva.
+
+function linkedCard(userId) {
+  return state().v2Links.find((l) => l.id === userId)?.card || null;
+}
+
+// Quien recrea un grupo v1 en v2: el fundador si ya migro; si no, el moderador migrado mas
+// antiguo; si no, el miembro migrado mas antiguo. Es deterministico para todos los clientes.
+function groupHost(group) {
+  const members = state().groupMembers.filter((m) => m.groupId === group.id && linkedCard(m.userId));
+  if (!members.length) return null;
+  if (members.some((m) => m.userId === group.founderId)) return group.founderId;
+  const byAge = (a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime();
+  const mods = members.filter((m) => canModerate(groupRole(group, m.userId))).sort(byAge);
+  return (mods[0] || members.sort(byAge)[0]).userId;
+}
+
+app.post('/api/migration/link', auth, async (req, res) => {
+  const card = req.body?.card;
+  if (!(await verifyCard(card))) return res.status(400).json({ error: 'Tarjeta inválida' });
+  await mutate((db) => {
+    const existing = db.v2Links.find((l) => l.id === req.user.id);
+    if (existing) {
+      existing.card = card;
+      existing.linkedAt = nowIso();
+    } else {
+      db.v2Links.push({ id: req.user.id, card, linkedAt: nowIso() });
+    }
+  });
+  res.json({ ok: true });
+});
+
+app.get('/api/migration/state', auth, (req, res) => {
+  const me = req.user.id;
+  const contacts = state().contacts
+    .filter((c) => c.userIds.includes(me))
+    .map((c) => {
+      const otherId = c.userIds.find((id) => id !== me);
+      const other = state().users.find((u) => u.id === otherId);
+      return { conversationId: c.conversationId, v1UserId: otherId, username: other?.username || '', card: linkedCard(otherId) };
+    });
+  const groups = state().groupMembers
+    .filter((m) => m.userId === me)
+    .map((mine) => {
+      const group = state().groups.find((g) => g.id === mine.groupId);
+      if (!group) return null;
+      const link = state().v2GroupLinks.find((l) => l.id === group.id);
+      const members = state().groupMembers.filter((m) => m.groupId === group.id).map((m) => ({
+        v1UserId: m.userId,
+        username: state().users.find((u) => u.id === m.userId)?.username || '',
+        role: groupRole(group, m.userId),
+        joinedAt: m.joinedAt,
+        card: linkedCard(m.userId)
+      }));
+      return {
+        groupId: group.id,
+        name: group.name,
+        membersCanWrite: membersCanWrite(group),
+        founderId: group.founderId,
+        joinedAt: mine.joinedAt,
+        hostUserId: link?.hostUserId || groupHost(group),
+        chatId: link?.chatId || null,
+        members
+      };
+    })
+    .filter(Boolean);
+  res.json({ me: { v1UserId: me, username: req.user.username }, contacts, groups });
+});
+
+// El anfitrion registra el grupo v2 que creo. Si otro ya lo registro, se devuelve ese y el
+// cliente abandona el suyo: un solo grupo v2 por grupo v1.
+app.post('/api/migration/groups/:id/chat', auth, async (req, res) => {
+  const group = state().groups.find((g) => g.id === req.params.id);
+  if (!group || !groupMember(group.id, req.user.id)) return res.status(404).json({ error: 'Grupo no encontrado' });
+  const chatId = req.body?.chatId;
+  if (typeof chatId !== 'string' || !/^g_[A-Za-z0-9_-]{8,64}$/.test(chatId)) return res.status(400).json({ error: 'Grupo v2 inválido' });
+  const existing = state().v2GroupLinks.find((l) => l.id === group.id);
+  if (existing) return res.json({ chatId: existing.chatId, hostUserId: existing.hostUserId });
+  if (groupHost(group) !== req.user.id) return res.status(403).json({ error: 'Otra persona recrea este grupo' });
+  await mutate((db) => db.v2GroupLinks.push({ id: group.id, chatId, hostUserId: req.user.id, createdAt: nowIso() }));
+  res.json({ chatId, hostUserId: req.user.id });
+});
+
+// Mismo historial que /api/messages, bajo /api/migration para que tambien lo pueda bajar una
+// cuenta con la clave reseteada.
+app.get('/api/migration/messages/:scope/:id', auth, (req, res) => {
+  const { scope, id } = req.params;
+  if (!canAccessChat(req.user.id, scope, id)) return res.status(403).json({ error: 'Sin acceso' });
+  const member = scope === 'group' ? groupMember(id, req.user.id) : null;
+  const messages = state().messages
+    .filter((m) => m.scope === scope && m.targetId === id && !(m.expiresAt && new Date(m.expiresAt).getTime() <= Date.now()))
+    .filter((m) => !member?.joinedAt || new Date(m.createdAt).getTime() >= new Date(member.joinedAt).getTime())
+    .slice(-2000)
+    .map((m) => ({ ...m, sender: publicUser(state().users.find((u) => u.id === m.senderId)) }));
+  res.json({ messages });
+});
 
 app.get('/api/messages/:scope/:id', auth, (req, res) => {
   const { scope, id } = req.params;

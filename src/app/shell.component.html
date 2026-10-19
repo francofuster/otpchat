@@ -43,7 +43,7 @@
       @if (onboardingMode === 'new') {
         <form class="stack" (ngSubmit)="createIdentity()">
           <input name="name" [(ngModel)]="nameInput" placeholder="Tu nombre" maxlength="32" autocomplete="nickname" required>
-          <p class="hint">No hay usuario ni contraseña: se crea una clave en este dispositivo. Después podés respaldarla o vincular otro dispositivo.</p>
+          <p class="hint">No hay usuario ni contraseña: se crea una clave en este dispositivo. Después podés respaldarla o vincular otro dispositivo. ¿Tenías cuenta en la versión anterior? Creá esta y después migrala desde el aviso de la lista.</p>
           <button class="primary loading-button" [disabled]="busy() || !nameInput.trim()">
             @if (busy()) { <span class="loading-dots" aria-label="Creando"><i></i><i></i><i></i></span> } @else { Empezar }
           </button>
@@ -109,11 +109,11 @@
       </header>
 
       <section class="list">
-        @if (legacyAvailable()) {
+        @if (node.legacyOnline() && !node.legacySession()) {
           <div class="legacy-banner">
-            <strong>Tenés chats de la versión anterior</strong>
-            <span>Bajalos a este dispositivo antes de que se retire el servidor viejo.</span>
-            <button class="primary" [disabled]="!!legacyProgress()" (click)="importLegacy()">{{ legacyProgress() || 'Importar chats anteriores' }}</button>
+            <strong>¿Usabas OTPChat antes?</strong>
+            <span>Traé tus contactos, grupos e historial de la versión anterior.</span>
+            <button class="primary" (click)="openMigrate()">Migrar mi cuenta anterior</button>
           </div>
         }
         <h2>Contactos</h2>
@@ -154,6 +154,9 @@
           <div class="title">
             <strong>{{ chat.title }}</strong>
             @if (chat.timerSeconds) { <span class="banner">Tus mensajes temporales: {{ timerLabel(chat.timerSeconds) }}</span> }
+            @if (legacyForSelected(); as old) {
+              <button class="legacy-link" (click)="openLegacy(old)">Ver {{ old.messages.length }} mensajes de la versión anterior</button>
+            }
           </div>
           <div class="chat-tools">
             <select [ngModel]="chat.timerSeconds" (ngModelChange)="setTimer($event)" title="Temporizador solo para tus mensajes" aria-label="Temporizador de mensajes">
@@ -234,7 +237,7 @@
         <header class="chat-head">
           <button class="back" aria-label="Volver" (click)="back()"><svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
           <span class="avatar chat-avatar legacy-avatar">v1</span>
-          <div class="title"><strong>{{ legacy.title }}</strong><span class="banner">Historial importado · solo lectura</span></div>
+          <div class="title"><strong>{{ legacy.title }}</strong><span class="banner">{{ legacy.sharedBy ? 'Compartido por ' + legacy.sharedBy + ' · no se puede verificar' : 'Historial importado · solo lectura' }}</span></div>
         </header>
         <div class="messages">
           @for (m of legacy.messages; track m.id) {
@@ -309,6 +312,23 @@
         @if (busy()) { <span class="loading-dots" aria-label="Creando"><i></i><i></i><i></i></span> } @else { Crear }
       </button>
       <p class="hint">Para unirse a un grupo, usá un link o QR generado por un admin.</p>
+    }
+    @if (openSheet === 'migrate') {
+      <h2>Migrar tu cuenta anterior</h2>
+      <p class="hint">Tus contactos y grupos se recrean en la red nueva a medida que cada persona migra. Los mensajes viejos se descifran con las llaves de este navegador; si no las tenés, te los pasa algún participante que sí las tenga.</p>
+      @if (browserSession) {
+        <button class="primary" [disabled]="!!node.migrating()" (click)="migrate(true)">Usar la sesión de este navegador</button>
+        <p class="hint">O entrá con otra cuenta:</p>
+      }
+      <form class="stack" (ngSubmit)="migrate()">
+        <input name="migUser" [(ngModel)]="migUser" placeholder="Usuario de la versión anterior" autocomplete="username">
+        <input name="migPass" [(ngModel)]="migPass" type="password" placeholder="Contraseña" autocomplete="current-password">
+        <button class="primary loading-button" [disabled]="!!node.migrating()">
+          @if (node.migrating()) { {{ node.migrating() }} } @else { Migrar }
+        </button>
+      </form>
+      @if (migError()) { <div class="error">{{ migError() }}</div> }
+      <p class="hint">La contraseña solo se usa para entrar a la versión anterior y no se guarda.</p>
     }
     @if (openSheet === 'paste') {
       <h2>Abrir una invitación</h2>
@@ -456,11 +476,19 @@
           <button class="primary" [disabled]="backupPassphrase.length < 8" (click)="exportBackup()">Descargar</button>
         </div>
       </div>
-      @if (node.legacy().length) {
+      @if (node.legacyOnline() || node.legacy().length) {
         <div class="settings-block">
-          <h3>Historial anterior</h3>
-          <p class="hint">{{ node.legacy().length }} chats importados de la versión anterior, guardados solo en este dispositivo.</p>
-          <button (click)="discardLegacy()">Borrar historial anterior</button>
+          <h3>Versión anterior</h3>
+          @if (node.legacySession(); as s) {
+            <p class="hint">Vinculada a la cuenta <b>{{ s.username }}</b>. Mientras la versión anterior siga activa, se suman solos los contactos y grupos que migren después.</p>
+            <button [disabled]="!!node.migrating()" (click)="node.migrate({ refreshToken: s.refreshToken, fingerprint: s.fingerprint })">{{ node.migrating() || 'Sincronizar ahora' }}</button>
+          } @else if (node.legacyOnline()) {
+            <button (click)="openMigrate()">Migrar mi cuenta anterior</button>
+          }
+          @if (node.legacy().length) {
+            <p class="hint">{{ node.legacy().length }} chats de la versión anterior guardados solo en este dispositivo.</p>
+            <button (click)="discardLegacy()">Borrar historial anterior</button>
+          }
         </div>
       }
       <button class="danger-action" (click)="logoutDevice()">

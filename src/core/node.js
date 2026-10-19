@@ -326,6 +326,8 @@ export class OtpNode {
         return this.onSyncRequest(message.from, message.fd, p);
       case 'sync.res':
         return this.ingest(p.entries || []);
+      case 'legacy.share':
+        return this.onLegacyShare(message.from, p);
       default:
     }
   }
@@ -910,6 +912,80 @@ export class OtpNode {
 
   async saveLegacyChats(chats) {
     await this.store.kv.set('legacy', chats);
+    this.emit('legacy', {});
+  }
+
+  // Suma un historial v1 al que ya hay (union por id de mensaje). Lo usan la importacion
+  // propia y lo que comparte otro participante.
+  async mergeLegacyChat(incoming) {
+    const chats = await this.legacyChats();
+    const current = chats.find((c) => c.id === incoming.id);
+    if (!current) {
+      chats.push({ ...incoming, messages: [...incoming.messages].sort((a, b) => a.ts - b.ts) });
+    } else {
+      const byId = new Map(current.messages.map((m) => [m.id, m]));
+      for (const m of incoming.messages) if (!byId.has(m.id)) byId.set(m.id, m);
+      current.messages = [...byId.values()].sort((a, b) => a.ts - b.ts);
+      current.v2ChatId = current.v2ChatId || incoming.v2ChatId;
+      current.title = current.title || incoming.title;
+      // Si ahora hay mensajes propios descifrados, deja de ser "solo compartido".
+      if (!incoming.sharedBy) delete current.sharedBy;
+    }
+    await this.saveLegacyChats(chats);
+  }
+
+  // Comparte con un participante el historial v1 de un chat que ya existe en v2. Va sellado
+  // como todo lo demas, en partes, y solo a miembros del chat nuevo.
+  async shareLegacy(chatId, userId, archive) {
+    const chat = this.chats.get(chatId);
+    if (!chat?.state.members.has(userId) || !archive.messages.length) return 0;
+    const meta = { id: archive.id, kind: archive.kind, title: archive.title };
+    let part = [];
+    let size = 0;
+    let sent = 0;
+    const flush = async () => {
+      if (!part.length) return;
+      await this.sendTo([userId], 'legacy.share', { chat: chatId, archive: { ...meta, messages: part } });
+      sent += part.length;
+      part = [];
+      size = 0;
+    };
+    for (const m of archive.messages) {
+      const bytes = JSON.stringify(m).length;
+      if (size + bytes > SYNC_CHUNK_BYTES) await flush();
+      part.push(m);
+      size += bytes;
+    }
+    await flush();
+    return sent;
+  }
+
+  async onLegacyShare(from, p) {
+    const chat = this.chats.get(p?.chat);
+    if (!chat?.state.members.has(from) || from === this.identity.userId) return;
+    const archive = p.archive;
+    if (typeof archive?.id !== 'string' || !/^legacy_(contact|group)_[A-Za-z0-9_:-]{1,128}$/.test(archive.id) || !Array.isArray(archive.messages)) return;
+    const clean = archive.messages.slice(0, 5000).filter((m) => typeof m?.id === 'string' && Number.isInteger(m.ts)).map((m) => ({
+      id: m.id.slice(0, 64),
+      ts: m.ts,
+      mine: m.mine === true,
+      senderName: String(m.senderName || '').slice(0, 64),
+      kind: m.kind === 'audio' ? 'audio' : 'text',
+      text: String(m.text || '').slice(0, 16_000),
+      ...(m.kind === 'audio' && typeof m.audio === 'string' ? { audio: m.audio, mime: String(m.mime || 'audio/webm').slice(0, 64), durationMs: Number(m.durationMs) || 0 } : {})
+    }));
+    const existing = (await this.legacyChats()).find((c) => c.id === archive.id);
+    await this.mergeLegacyChat({
+      id: archive.id,
+      kind: archive.kind === 'group' ? 'group' : 'contact',
+      // En un contacto el titulo que manda el otro es su vista (mi nombre): aca va el suyo.
+      title: existing?.title || (archive.kind === 'group' ? String(archive.title || '').slice(0, 64) : this.nameOf(from)),
+      v2ChatId: chat.state.id,
+      importedAt: Date.now(),
+      // Nadie puede verificar un historial viejo que manda otro: se marca de donde vino.
+      ...(existing && !existing.sharedBy ? {} : { sharedBy: this.nameOf(from) }),
+      messages: clean
+    });
   }
 
   async wipe() {
