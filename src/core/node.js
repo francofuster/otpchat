@@ -8,8 +8,14 @@ import { createCard, decodeInvite, generateDevice, inviteLink, sealFor, unseal, 
 
 export const PREKEY_ROTATE_MS = 7 * 24 * 60 * 60_000;
 export const PREKEY_KEEP_MS = 30 * 24 * 60 * 60_000;
-export const INVITE_TTL_MS = 60_000;
-export const LINK_TTL_MS = 120_000;
+// Todos los QR (contacto, grupo, vinculacion de dispositivo) se renuevan igual: cada
+// INVITE_REFRESH_MS el cliente genera un codigo y un link nuevos y anula el anterior. El
+// anterior sobrevive INVITE_GRACE_MS para que alguien que ya lo escaneo alcance a aceptar. El
+// vencimiento es solo el respaldo por si el cliente se cierra sin anular el ultimo.
+export const INVITE_REFRESH_MS = 60_000;
+export const INVITE_GRACE_MS = 15_000;
+export const INVITE_TTL_MS = INVITE_REFRESH_MS + INVITE_GRACE_MS;
+export const LINK_TTL_MS = INVITE_TTL_MS;
 export const AUDIO_DEFAULT_TTL_MS = 24 * 60 * 60_000;
 export const TIMER_OPTIONS = [0, 30, 60, 300, 1800, 3600, 21600, 43200, 86400, 604800];
 const SYNC_CHUNK_BYTES = 2 * 1024 * 1024;
@@ -34,6 +40,8 @@ export class OtpNode {
     this.pendingInvites = new Map();
     this.waiters = new Map();
     this.orphans = new Map();
+    this.chatLocks = new Map();
+    this.lastTs = 0;
     this.seen = new Set();
     this.listeners = new Map();
     this.outbox = [];
@@ -361,7 +369,18 @@ export class OtpNode {
       if (!byChat.has(entry.chat)) byChat.set(entry.chat, []);
       byChat.get(entry.chat).push(entry);
     }
-    for (const [chatId, list] of byChat) await this.ingestChat(chatId, list);
+    for (const [chatId, list] of byChat) await this.withChat(chatId, () => this.ingestChat(chatId, list));
+  }
+
+  // Todo cambio al estado de un chat pasa por una cola por chat. El estado se arma leyendo, esperando
+  // la verificacion de firmas y reescribiendo: sin la cola, una rafaga de mensajes (o recibir mientras
+  // se envia) hace que cada cambio pise al anterior y se pierdan mensajes en memoria.
+  withChat(chatId, fn) {
+    const run = (this.chatLocks.get(chatId) || Promise.resolve()).then(fn);
+    const tail = run.catch(() => {});
+    this.chatLocks.set(chatId, tail);
+    void tail.then(() => { if (this.chatLocks.get(chatId) === tail) this.chatLocks.delete(chatId); });
+    return run;
   }
 
   async ingestChat(chatId, list) {
@@ -414,9 +433,17 @@ export class OtpNode {
   // Crea una entrada propia, la valida contra el estado y la replica. Los destinatarios son
   // los miembros antes y despues del cambio: un expulsado recibe su propia expulsion.
   async append(chatId, type, body) {
+    const { entry, recipients } = await this.withChat(chatId, () => this.appendLocked(chatId, type, body));
+    await this.sendTo(recipients, 'entry', { entry });
+    return entry;
+  }
+
+  async appendLocked(chatId, type, body) {
     const chat = this.chats.get(chatId);
     if (!chat && type !== 'chat.create') throw new Error('Chat no encontrado');
-    const entry = await createEntry(this.identity, { chat: chatId, type, body });
+    // ts creciente por nodo: dos mensajes seguidos en el mismo milisegundo no cambian de orden.
+    this.lastTs = Math.max(Date.now(), this.lastTs + 1);
+    const entry = await createEntry(this.identity, { chat: chatId, type, body, ts: this.lastTs });
     const previous = chat ? [...chat.entries.values()] : [];
     const { state, accepted } = await buildState(chatId, [...previous, entry]);
     if (!accepted.some((e) => e.id === entry.id)) throw new Error('No tenés permiso para hacer eso');
@@ -430,8 +457,7 @@ export class OtpNode {
       if (!chat) await this.saveChatIndex();
       this.emit('chat', { chatId, added: [entry.id], incoming: 0, created: !chat });
     }
-    await this.sendTo(recipients, 'entry', { entry });
-    return entry;
+    return { entry, recipients };
   }
 
   listChats() {
@@ -556,18 +582,22 @@ export class OtpNode {
   async sweepExpired() {
     const now = Date.now();
     let removed = 0;
-    for (const [chatId, chat] of this.chats) {
-      const expired = chat.state.messages.filter((m) => m.body.expiresAt && m.body.expiresAt <= now);
-      if (!expired.length) continue;
-      for (const entry of expired) {
-        const stone = tombstone(entry);
-        chat.entries.set(entry.id, stone);
-        await this.store.entries.put(stone);
-      }
-      const ids = new Set(expired.map((e) => e.id));
-      chat.state.messages = chat.state.messages.filter((m) => !ids.has(m.id));
-      removed += expired.length;
-      this.emit('chat', { chatId, added: [], incoming: 0, expired: expired.length });
+    for (const chatId of [...this.chats.keys()]) {
+      if (!this.chats.get(chatId)?.state.messages.some((m) => m.body.expiresAt && m.body.expiresAt <= now)) continue;
+      removed += await this.withChat(chatId, async () => {
+        const chat = this.chats.get(chatId);
+        const expired = chat ? chat.state.messages.filter((m) => m.body.expiresAt && m.body.expiresAt <= now) : [];
+        if (!expired.length) return 0;
+        for (const entry of expired) {
+          const stone = tombstone(entry);
+          chat.entries.set(entry.id, stone);
+          await this.store.entries.put(stone);
+        }
+        const ids = new Set(expired.map((e) => e.id));
+        chat.state.messages = chat.state.messages.filter((m) => !ids.has(m.id));
+        this.emit('chat', { chatId, added: [], incoming: 0, expired: expired.length });
+        return expired.length;
+      });
     }
     return removed;
   }
@@ -620,6 +650,7 @@ export class OtpNode {
       const chat = this.chats.get(groupId);
       if (!chat || !canModerate(roleOf(chat.state, this.identity.userId))) throw new Error('Requiere admin o subadmin');
     }
+    this.prunePendingInvites();
     const token = randomId('t', 16);
     const expiresAt = Date.now() + INVITE_TTL_MS;
     this.pendingInvites.set(token, { kind, groupId, expiresAt });
@@ -627,8 +658,19 @@ export class OtpNode {
     return { token, expiresAt, link: inviteLink(this.origin, invite) };
   }
 
-  cancelInvite(token) {
-    this.pendingInvites.delete(token);
+  // Sin gracia: deja de servir ya (se cerro la hoja). Con gracia: es una renovacion y el
+  // codigo viejo todavia sirve unos segundos.
+  cancelInvite(token, graceMs = 0) {
+    const invite = this.pendingInvites.get(token);
+    if (!invite) return;
+    if (graceMs > 0) invite.expiresAt = Math.min(invite.expiresAt, Date.now() + graceMs);
+    else this.pendingInvites.delete(token);
+  }
+
+  // Los codigos vencidos no se acumulan en memoria.
+  prunePendingInvites() {
+    const now = Date.now();
+    for (const [token, invite] of this.pendingInvites) if (invite.expiresAt <= now) this.pendingInvites.delete(token);
   }
 
   takeInvite(token, kind) {
@@ -810,6 +852,7 @@ export class OtpNode {
   }
 
   async createLinkInvite() {
+    this.prunePendingInvites();
     const token = randomId('t', 16);
     const expiresAt = Date.now() + LINK_TTL_MS;
     this.pendingInvites.set(token, { kind: 'link', expiresAt });

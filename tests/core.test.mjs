@@ -7,7 +7,7 @@ import { buildState, createEntry } from '../src/core/log.js';
 import { createCard, decodeInvite, verifyCard } from '../src/core/protocol.js';
 import { utf8, fromUtf8 } from '../src/core/encoding.js';
 import { createMemoryStore } from '../src/core/memory-store.js';
-import { PREKEY_ROTATE_MS } from '../src/core/node.js';
+import { INVITE_GRACE_MS, INVITE_REFRESH_MS, INVITE_TTL_MS, LINK_TTL_MS, PREKEY_ROTATE_MS } from '../src/core/node.js';
 import { closeAll, contactPair, groupWith, makeNode, sleep, startRelay, until } from './helpers/nodes.mjs';
 
 let relay;
@@ -199,6 +199,20 @@ test('si el relay pierde el buzon, la sincronizacion entre nodos recupera el men
   await nuevo.close();
 });
 
+test('una rafaga de mensajes simultaneos no pierde ninguno en memoria ni en el almacen', async () => {
+  const { na, nb, chatId } = await contactPair(relay.url);
+  track(na, nb);
+  const total = 150;
+  await Promise.all(Array.from({ length: total }, (_, i) => nb.sendText(chatId, `r${i}`)));
+  await until(() => na.messages(chatId).length === total, { timeout: 15000 });
+  const guardados = (await na.store.entries.list(chatId)).filter((e) => e.type === 'msg');
+  assert.equal(guardados.length, total, 'todos quedan guardados');
+  assert.equal(new Set(na.messages(chatId).map((m) => m.text)).size, total, 'ninguno repetido ni perdido');
+  assert.equal(nb.messages(chatId).length, total, 'el emisor tambien los conserva todos');
+  const orden = Array.from({ length: total }, (_, i) => `r${i}`);
+  assert.deepEqual(na.messages(chatId).map((m) => m.text), orden, 'conservan el orden en que se enviaron');
+});
+
 test('si el relay frena por limite de tasa, el nodo reintenta y no se pierde nada', async () => {
   const lento = await startRelay({ rateBurst: 8, ratePerSec: 20 });
   const { na, nb, chatId } = await contactPair(lento.url);
@@ -207,6 +221,45 @@ test('si el relay frena por limite de tasa, el nodo reintenta y no se pierde nad
   na.transport.close();
   nb.transport.close();
   await lento.close();
+});
+
+test('todos los QR se renuevan cada minuto y tienen la misma vigencia', async () => {
+  assert.equal(INVITE_REFRESH_MS, 60_000);
+  assert.equal(INVITE_TTL_MS, INVITE_REFRESH_MS + INVITE_GRACE_MS);
+  assert.equal(LINK_TTL_MS, INVITE_TTL_MS, 'la vinculacion no vive mas que un contacto');
+  const { owner, groupId } = await groupWith(relay.url, 0);
+  track(owner);
+  for (const crear of [() => owner.createInvite('contact'), () => owner.createInvite('group', groupId), () => owner.createLinkInvite()]) {
+    const { expiresAt } = await crear();
+    const restante = expiresAt - Date.now();
+    assert.ok(restante > INVITE_REFRESH_MS && restante <= INVITE_TTL_MS, `vigencia fuera de rango: ${restante}ms`);
+  }
+});
+
+test('al renovar, el codigo viejo sirve solo unos segundos; al cerrar la hoja, ninguno', async () => {
+  const na = await makeNode(relay.url, 'Ana');
+  const nb = await makeNode(relay.url, 'Beto', { waitMs: 1500 });
+  const nc = await makeNode(relay.url, 'Caro', { waitMs: 1500 });
+  track(na, nb, nc);
+  // Renovacion: el viejo queda con gracia y el nuevo reemplaza al anterior.
+  const viejo = await na.createInvite('contact');
+  na.cancelInvite(viejo.token, INVITE_GRACE_MS);
+  assert.ok(na.pendingInvites.get(viejo.token).expiresAt <= Date.now() + INVITE_GRACE_MS, 'la gracia acota el vencimiento');
+  await nb.acceptInvite(viejo.link.split('#/i/')[1]);
+  // Cierre de la hoja: sin gracia, deja de servir en el acto.
+  const cerrado = await na.createInvite('contact');
+  na.cancelInvite(cerrado.token);
+  assert.equal(na.pendingInvites.has(cerrado.token), false);
+  await assert.rejects(nc.acceptInvite(cerrado.link.split('#/i/')[1]), /no respondió/);
+});
+
+test('los codigos vencidos no se acumulan en memoria', async () => {
+  const na = await makeNode(relay.url, 'Ana');
+  track(na);
+  const { token } = await na.createInvite('contact');
+  na.pendingInvites.get(token).expiresAt = Date.now() - 1;
+  await na.createInvite('contact');
+  assert.equal(na.pendingInvites.has(token), false);
 });
 
 test('el relay rechaza una autenticacion con firma ajena y reemplaza la conexion duplicada', async () => {

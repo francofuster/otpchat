@@ -335,10 +335,11 @@
         <input [value]="inv.link" readonly aria-label="Link de invitación">
         <button type="button" title="Copiar link" aria-label="Copiar link" (click)="copyInviteLink(inv.link)"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
+      <p class="renew" role="timer" aria-live="off"><i [style.width.%]="(inviteRenewIn() / 60) * 100"></i><span>Se renueva en {{ inviteRenewIn() }} s</span></p>
       @if (openSheet === 'link') {
-        <p class="hint">Escaneá este QR con el dispositivo nuevo (o pegá el link en "Vincular"). Recibe tu cuenta y tus chats directamente desde este dispositivo, cifrado. Nunca lo compartas con otra persona.</p>
+        <p class="hint">Escaneá este QR con el dispositivo nuevo (o pegá el link en "Vincular"). Recibe tu cuenta y tus chats directamente desde este dispositivo, cifrado. El QR y el link se renuevan cada minuto. Nunca lo compartas con otra persona.</p>
       } @else {
-        <p class="hint">Mantené esta pantalla abierta: la invitación se resuelve directo entre los dos dispositivos. El código y el QR se renuevan cada 30s por seguridad.</p>
+        <p class="hint">Mantené esta pantalla abierta: la invitación se resuelve directo entre los dos dispositivos. El código, el QR y el link se renuevan cada minuto por seguridad.</p>
       }
       <button (click)="sheet.set(null)">Cancelar</button>
     }

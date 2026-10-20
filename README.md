@@ -28,7 +28,7 @@ Detalle técnico: [docs/PROTOCOLO-V2.md](docs/PROTOCOLO-V2.md) · Plan y decisio
 
 ### Características
 
-- **Chat 1 a 1 y grupal** con invitación por **QR que se renueva cada 30 s** (el anterior deja de servir; el de contacto es de un solo uso)
+- **Chat 1 a 1 y grupal** con invitación por QR. **Todos los QR y sus links (contacto, grupo y vinculación de dispositivos) se renuevan cada minuto**: el anterior deja de servir tras 15 s de gracia, y al cerrar la hoja deja de servir al instante. El de contacto es de un solo uso
 - **Mensajes de audio** cifrados igual que el texto (duran 1 día sin temporizador)
 - **Mensajes temporales** de 30 s a 7 días: cada nodo los borra al vencer y deja una lápida para que no vuelvan por sincronización
 - **Roles de grupo**: admin principal, subadmins y candado "solo administradores escriben"

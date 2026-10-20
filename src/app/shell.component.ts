@@ -7,14 +7,11 @@ import { UiService } from './ui.service';
 import { PrivacyService } from './privacy.service';
 import { androidDownloadUrl } from './runtime-config';
 import { browserLegacySession, legacyFingerprint, legacyUsernameFromSession, LegacyChat } from './legacy-import';
-import { TIMER_OPTIONS } from '../core/node.js';
+import { INVITE_GRACE_MS, INVITE_REFRESH_MS, TIMER_OPTIONS } from '../core/node.js';
 import { b64url, fromB64url } from '../core/encoding.js';
 
 const maxRecordingMs = 120_000;
 const minRecordingMs = 700;
-// Cada cuanto se regenera el QR de invitacion mientras esta a la vista. El anterior deja de
-// servir en el acto: un codigo filtrado vale como mucho unos segundos.
-const inviteRefreshMs = 30_000;
 export const pendingInviteKey = 'otpchat_pending_invite_v2';
 
 type Sheet = 'contact' | 'group' | 'actions' | 'members' | 'settings' | 'link' | 'safety' | 'paste' | 'migrate' | null;
@@ -49,7 +46,12 @@ export class ShellComponent implements OnInit {
   sheet = signal<Sheet>(null);
   selectedId = signal<string | null>(null);
   legacyOpen = signal<LegacyChat | null>(null);
-  invite = signal<{ link: string; qr: string; expiresAt: number; kind: 'contact' | 'group' | 'link' } | null>(null);
+  // Cada QR (y su link) se regenera cada INVITE_REFRESH_MS mientras esta a la vista: el codigo
+  // anterior deja de servir (con unos segundos de gracia) y un link filtrado dura a lo sumo un
+  // minuto. refreshAt marca cuando toca el proximo.
+  invite = signal<{ link: string; qr: string; expiresAt: number; refreshAt: number; kind: 'contact' | 'group' | 'link' } | null>(null);
+  inviteNow = signal(Date.now());
+  private inviteBusy = false;
   safety = signal<string[] | null>(null);
   members = signal<any[]>([]);
   selectedMembers = signal<Set<string>>(new Set());
@@ -104,7 +106,7 @@ export class ShellComponent implements OnInit {
   constructor(public node: NodeService, public ui: UiService, public privacy: PrivacyService, private router: Router) {
     effect(() => {
       const mostrando = (this.sheet() === 'contact' || this.sheet() === 'group' || this.sheet() === 'link') && !!this.invite();
-      if (mostrando && !this.inviteRefreshTimer) this.inviteRefreshTimer = setInterval(() => void this.refreshInvite(), inviteRefreshMs);
+      if (mostrando && !this.inviteRefreshTimer) this.inviteRefreshTimer = setInterval(() => this.tickInvite(), 1000);
       else if (!mostrando && this.inviteRefreshTimer) this.stopInviteRotation();
     });
     // Mensajes nuevos: badge, aviso y lectura si el chat esta a la vista.
@@ -438,21 +440,42 @@ export class ShellComponent implements OnInit {
     await this.refreshInvite('link');
   }
 
+  // Un contador de 1s en lugar de un intervalo de 60s: un navegador con la pestana en segundo
+  // plano atrasa los timers, y asi se renueva apenas vuelve en vez de mostrar un QR vencido.
+  private tickInvite() {
+    const now = Date.now();
+    this.inviteNow.set(now);
+    const invite = this.invite();
+    if (invite && now >= invite.refreshAt) void this.refreshInvite();
+  }
+
+  // Segundos que faltan para el proximo QR (se muestra en la hoja).
+  inviteRenewIn() {
+    const invite = this.invite();
+    return invite ? Math.max(0, Math.ceil((invite.refreshAt - this.inviteNow()) / 1000)) : 0;
+  }
+
   // Genera un codigo nuevo y anula el anterior. Lo llama la apertura de la hoja y despues el
-  // timer cada 30s mientras el QR siga a la vista.
+  // contador cada INVITE_REFRESH_MS mientras el QR siga a la vista.
   private async refreshInvite(kind = this.invite()?.kind) {
-    if (!kind) return;
+    if (!kind || this.inviteBusy) return;
+    this.inviteBusy = true;
     try {
       const created = kind === 'link'
         ? await this.node.node.createLinkInvite()
         : await this.node.node.createInvite(kind, kind === 'group' ? this.selectedId() : undefined);
       const QRCode = (await import('qrcode')) as any;
       const qr = await (QRCode.toDataURL || QRCode.default?.toDataURL)(created.link, { margin: 1, width: 320, errorCorrectionLevel: 'M' });
-      if (this.inviteToken) this.node.node.cancelInvite(this.inviteToken);
+      // El anterior sobrevive unos segundos por si alguien ya lo escaneo y esta aceptando.
+      if (this.inviteToken) this.node.node.cancelInvite(this.inviteToken, INVITE_GRACE_MS);
       this.inviteToken = created.token;
-      this.invite.set({ link: created.link, qr, expiresAt: created.expiresAt, kind });
+      this.invite.set({ link: created.link, qr, expiresAt: created.expiresAt, refreshAt: Date.now() + INVITE_REFRESH_MS, kind });
     } catch (err: any) {
-      this.ui.toast(err.message || 'No se pudo generar el QR');
+      // Sin conexion el QR actual sigue valiendo hasta su vencimiento: se reintenta en 5s.
+      this.invite.update((current) => (current ? { ...current, refreshAt: Date.now() + 5000 } : current));
+      if (!this.invite()) this.ui.toast(err.message || 'No se pudo generar el QR');
+    } finally {
+      this.inviteBusy = false;
     }
   }
 

@@ -44,12 +44,32 @@ describe('cuenta e invitaciones', () => {
     });
   });
 
-  it('el QR de invitación se renueva solo y el anterior deja de servir', () => {
-    cy.clock(Date.now(), ['setInterval']);
+  it('el QR y el link se renuevan cada minuto, con cuenta regresiva', () => {
+    cy.clock(Date.now(), ['setInterval', 'Date']);
     cy.crearCuenta('Ana');
     cy.get('.sidebar header button[title="Agregar contacto"]').click();
+    cy.contains('.sheet .renew', /Se renueva en (59|60) s/).should('be.visible');
     cy.linkDeInvitacion().then((primero) => {
-      cy.tick(30_000);
+      cy.get('.sheet img').invoke('attr', 'src').then((qrPrimero) => {
+        cy.tick(30_000);
+        cy.contains('.sheet .renew', /Se renueva en (29|30) s/).should('be.visible');
+        cy.get('.sheet .copy-link input').should('have.value', primero);
+        cy.tick(31_000);
+        cy.get('.sheet .copy-link input').should('not.have.value', primero);
+        cy.get('.sheet img').invoke('attr', 'src').should('not.eq', qrPrimero);
+        cy.contains('.sheet .renew', /Se renueva en (59|60) s/).should('be.visible');
+      });
+    });
+  });
+
+  it('el QR de vincular dispositivo también se renueva cada minuto', () => {
+    cy.clock(Date.now(), ['setInterval', 'Date']);
+    cy.crearCuenta('Ana');
+    cy.abrirConfiguracion();
+    cy.contains('.sheet button', 'Vincular dispositivo').click();
+    cy.contains('.sheet .renew', /Se renueva en/).should('be.visible');
+    cy.linkDeInvitacion().then((primero) => {
+      cy.tick(61_000);
       cy.get('.sheet .copy-link input').should('not.have.value', primero);
     });
   });

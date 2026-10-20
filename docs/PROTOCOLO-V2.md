@@ -44,6 +44,22 @@ Tipos de mensaje dentro del sobre:
 | `sync.req` / `sync.res` | Pedir y mandar entradas faltantes |
 | `link.request` / `link.welcome` | Vincular un dispositivo propio |
 
+## Invitaciones y QR
+
+Un QR lleva un link con la clave pública de quien invita, su dispositivo y un código de un solo
+uso (el código se resuelve directo entre los dos dispositivos, el relay no lo guarda). Contacto,
+grupo y vinculación de dispositivos usan la misma regla (`INVITE_REFRESH_MS` en
+`src/core/node.js`):
+
+- Mientras la hoja del QR está abierta, el cliente genera un **código y un link nuevos cada
+  60 s**. El anterior sigue valiendo 15 s (`INVITE_GRACE_MS`) para que alguien que ya lo escaneó
+  alcance a aceptar, y después deja de servir.
+- Al cerrar la hoja, el último código se anula **en el acto**.
+- El vencimiento (`INVITE_TTL_MS`, 75 s) es solo el respaldo por si el cliente se cierra sin
+  anular el último. Los códigos vencidos se descartan de la memoria.
+- La hoja muestra cuánto falta para el próximo QR y renueva apenas llega la hora, aunque la
+  pestaña haya estado en segundo plano.
+
 ## Log por chat
 
 Cada chat es un conjunto de **entradas firmadas** por su autor:
